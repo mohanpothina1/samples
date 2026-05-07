@@ -1,0 +1,661 @@
+protocolv2/
+    ProtocolV2Frame.java
+    ProtocolV2Builder.java
+    ProtocolV2Parser.java
+    ProtocolV2SocketHandler.java
+    ProtocolV2Receiver.java
+    ProtocolV2Commands.java
+	
+public class ProtocolV2Frame {
+
+    public byte funCode;
+    public byte address;
+    public byte command;
+    public byte ack;
+    public byte dataLen;
+
+    public byte[] data;
+}
+
+public class ProtocolV2Commands {
+
+    public static final byte CMD_GET_VERSION = 0x12;
+
+    public static final byte CMD_REALTIME = 0x13;
+
+    public static final byte CMD_PA_SWITCH = 0x21;
+
+    public static final byte CMD_SIGNAL_SWITCH = 0x27;
+
+    public static final byte CMD_FREQUENCY = 0x28;
+
+    public static final byte CMD_DWELL_TIME = 0x29;
+}
+
+public class ProtocolV2Builder {
+
+    public static byte[] buildFrame(
+            int address,
+            int command,
+            byte[] data
+    ) {
+
+        ByteArrayOutputStream out =
+                new ByteArrayOutputStream();
+
+        out.write(0x7E); // SOF
+
+        out.write(0x15); // Fun code
+
+        out.write(address);
+
+        out.write(command);
+
+        out.write(0x00); // ACK
+
+        out.write(data.length);
+
+        out.writeBytes(data);
+
+        int checksum =
+                calculateChecksum(
+                        0x15,
+                        address,
+                        command,
+                        0x00,
+                        data.length,
+                        data
+                );
+
+        out.write(checksum);
+
+        out.write(0x7F); // EOF
+
+        return out.toByteArray();
+    }
+
+    private static int calculateChecksum(
+            int fun,
+            int addr,
+            int cmd,
+            int ack,
+            int len,
+            byte[] data
+    ) {
+
+        int sum =
+                fun + addr + cmd + ack + len;
+
+        for (byte b : data) {
+            sum += (b & 0xFF);
+        }
+
+        return (~sum + 1) & 0xFF;
+    }
+}
+
+ProtocolV2Parser.java
+
+Reads frames.
+
+Responsibilities:
+
+validate SOF/EOF
+validate checksum
+parse fields
+parse data
+
+public class ProtocolV2Parser {
+
+    public static ProtocolV2Frame parse(byte[] frame) {
+
+        if (frame[0] != 0x7E)
+            return null;
+
+        if (frame[frame.length - 1] != 0x7F)
+            return null;
+
+        ProtocolV2Frame f =
+                new ProtocolV2Frame();
+
+        f.funCode = frame[1];
+
+        f.address = frame[2];
+
+        f.command = frame[3];
+
+        f.ack = frame[4];
+
+        f.dataLen = frame[5];
+
+        f.data = Arrays.copyOfRange(
+                frame,
+                6,
+                6 + f.dataLen
+        );
+
+        return f;
+    }
+}
+
+ProtocolV2Receiver.java
+
+Equivalent to your TCPReceive.
+
+But frame start/end:
+
+start = 0x7E
+end = 0x7F
+
+ProtocolV2SocketHandler.java
+
+Equivalent to your current socket handler.
+
+Responsibilities:
+
+connect socket
+sender queue
+receiver
+reconnect
+callbacks
+
+But parser/builder different.
+
+
+public class ProtocolV2Receiver extends Thread {
+
+    private final Socket socket;
+    private final Consumer<byte[]> frameCallback;
+
+    public ProtocolV2Receiver(Socket socket,
+                              Consumer<byte[]> frameCallback) {
+
+        this.socket = socket;
+        this.frameCallback = frameCallback;
+    }
+
+    @Override
+    public void run() {
+
+        try {
+
+            InputStream in = socket.getInputStream();
+
+            while (!socket.isClosed()) {
+
+                byte[] frame = readFrame(in);
+
+                if (frame != null) {
+                    frameCallback.accept(frame);
+                }
+            }
+
+        } catch (Exception e) {
+            System.out.println("V2 Receiver stopped");
+        }
+    }
+
+    private byte[] readFrame(InputStream in) throws IOException {
+
+        ByteArrayOutputStream buffer =
+                new ByteArrayOutputStream();
+
+        int b;
+
+        // wait start 0x7E
+        while ((b = in.read()) != -1) {
+
+            if (b == 0x7E) {
+                buffer.write(b);
+                break;
+            }
+        }
+
+        if (b == -1) return null;
+
+        // read until 0x7F
+        while ((b = in.read()) != -1) {
+
+            buffer.write(b);
+
+            if (b == 0x7F) {
+                break;
+            }
+        }
+
+        return buffer.toByteArray();
+    }
+}
+
+-----------------------
+public class Module {
+
+    public String name;
+
+    public int address;
+
+    public int startFreq;
+
+    public int stopFreq;
+}
+
+import java.util.List;
+
+public class ControlCard {
+
+    public String id;
+
+    public String ip;
+
+    public int port;
+
+    public boolean realtime;
+
+    public List<Module> modules;
+}
+
+import java.util.List;
+
+public class Config {
+
+    public List<ControlCard> control_cards;
+}
+
+public class HardwareData {
+
+    public boolean paOn;
+
+    public double vswr;
+
+    public double temp;
+
+    public double fwd;
+
+    public double rfl;
+}
+
+import java.io.ByteArrayOutputStream;
+
+public class ProtocolBuilder {
+
+    public static byte[] buildRealtimeCommand(int address) {
+
+        return buildPacket(address, 0x13, new byte[0]);
+    }
+
+    public static byte[] buildPaOnCommand(int address) {
+
+        byte[] data = {
+                0x01,
+                (byte) address,
+                0x01
+        };
+
+        return buildPacket(0xFF, 0x21, data);
+    }
+
+    public static byte[] buildPaOffCommand(int address) {
+
+        byte[] data = {
+                0x01,
+                (byte) address,
+                0x00
+        };
+
+        return buildPacket(0xFF, 0x21, data);
+    }
+
+    public static byte[] buildFrequencyCommand(int address,
+                                               int start,
+                                               int stop) {
+
+        byte[] data = {
+
+                0x01,
+
+                (byte) address,
+
+                (byte) (start >> 8),
+                (byte) start,
+
+                (byte) (stop >> 8),
+                (byte) stop
+        };
+
+        return buildPacket(0xFF, 0x28, data);
+    }
+
+    private static byte[] buildPacket(int addr,
+                                      int command,
+                                      byte[] data) {
+
+        ByteArrayOutputStream out =
+                new ByteArrayOutputStream();
+
+        out.write(0x7E);
+
+        out.write(0x15);
+
+        out.write(addr);
+
+        out.write(command);
+
+        out.write(0x00);
+
+        out.write(data.length);
+
+        out.writeBytes(data);
+
+        int checksum = checksum(
+                out.toByteArray(),
+                1,
+                out.size() - 1
+        );
+
+        out.write(checksum);
+
+        out.write(0x7F);
+
+        return out.toByteArray();
+    }
+
+    private static int checksum(byte[] arr,
+                                int start,
+                                int end) {
+
+        int sum = 0;
+
+        for (int i = start; i < end; i++) {
+            sum += arr[i] & 0xFF;
+        }
+
+        return (~sum + 1) & 0xFF;
+    }
+}
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.Socket;
+import java.util.function.Consumer;
+
+public class NewTCPReceive extends Thread {
+
+    private final Socket socket;
+
+    private final Consumer<byte[]> callback;
+
+    public NewTCPReceive(Socket socket,
+                         Consumer<byte[]> callback) {
+
+        this.socket = socket;
+        this.callback = callback;
+    }
+
+    @Override
+    public void run() {
+
+        try {
+
+            InputStream in =
+                    socket.getInputStream();
+
+            while (!socket.isClosed()) {
+
+                byte[] frame = readFrame(in);
+
+                if (frame != null) {
+                    callback.accept(frame);
+                }
+            }
+
+        } catch (Exception e) {
+
+            System.out.println("Receiver stopped");
+        }
+    }
+
+    private byte[] readFrame(InputStream in)
+            throws Exception {
+
+        ByteArrayOutputStream buffer =
+                new ByteArrayOutputStream();
+
+        int b;
+
+        while ((b = in.read()) != -1) {
+
+            if (b == 0x7E) {
+
+                buffer.write(b);
+                break;
+            }
+        }
+
+        if (b == -1) return null;
+
+        while ((b = in.read()) != -1) {
+
+            buffer.write(b);
+
+            if (b == 0x7F) {
+                break;
+            }
+        }
+
+        return buffer.toByteArray();
+    }
+}
+
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.function.Consumer;
+
+public class NewControlCardSocketHandler
+        implements Runnable {
+
+    private final String ip;
+
+    private final int port;
+
+    private final Consumer<Boolean> statusCallback;
+
+    private final Consumer<HardwareData> dataCallback;
+
+    private final ArrayBlockingQueue<byte[]> queue =
+            new ArrayBlockingQueue<>(100);
+
+    private volatile boolean running = true;
+
+    private Socket socket;
+
+    private OutputStream out;
+
+    public NewControlCardSocketHandler(
+            String ip,
+            int port,
+            Consumer<Boolean> statusCallback,
+            Consumer<HardwareData> dataCallback) {
+
+        this.ip = ip;
+        this.port = port;
+        this.statusCallback = statusCallback;
+        this.dataCallback = dataCallback;
+    }
+
+    @Override
+    public void run() {
+
+        while (running) {
+
+            try {
+
+                socket = new Socket();
+
+                socket.connect(
+                        new InetSocketAddress(ip, port),
+                        3000
+                );
+
+                out = socket.getOutputStream();
+
+                statusCallback.accept(true);
+
+                System.out.println(
+                        "Connected: " + ip
+                );
+
+                startReceiver();
+
+                startSender();
+
+                while (!socket.isClosed()) {
+                    Thread.sleep(200);
+                }
+
+            } catch (Exception e) {
+
+                statusCallback.accept(false);
+
+                System.out.println(
+                        "Disconnected: " + ip
+                );
+
+                try {
+                    Thread.sleep(2000);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    public void enqueue(byte[] cmd) {
+
+        queue.offer(cmd);
+    }
+
+    private void startSender() {
+
+        new Thread(() -> {
+
+            try {
+
+                while (running) {
+
+                    byte[] cmd = queue.take();
+
+                    out.write(cmd);
+
+                    out.flush();
+
+                    System.out.println(
+                            bytesToHex(cmd)
+                    );
+                }
+
+            } catch (Exception e) {
+
+                System.out.println(
+                        "Sender stopped"
+                );
+            }
+
+        }).start();
+    }
+
+    private void startReceiver() {
+
+        NewTCPReceive receive =
+                new NewTCPReceive(
+                        socket,
+                        this::handleFrame
+                );
+
+        receive.start();
+    }
+
+    private void handleFrame(byte[] frame) {
+
+        System.out.println(
+                "RX: " + bytesToHex(frame)
+        );
+
+        HardwareData data =
+                parseRealtime(frame);
+
+        if (data != null) {
+
+            dataCallback.accept(data);
+        }
+    }
+
+    private HardwareData parseRealtime(
+            byte[] frame) {
+
+        try {
+
+            if (frame[3] != 0x13) {
+                return null;
+            }
+
+            HardwareData d =
+                    new HardwareData();
+
+            d.temp = frame[8];
+
+            d.vswr = frame[9];
+
+            d.fwd = frame[10];
+
+            d.rfl = frame[11];
+
+            return d;
+
+        } catch (Exception e) {
+
+            return null;
+        }
+    }
+
+    private String bytesToHex(byte[] bytes) {
+
+        StringBuilder sb =
+                new StringBuilder();
+
+        for (byte b : bytes) {
+
+            sb.append(
+                    String.format("%02X ", b)
+            );
+        }
+
+        return sb.toString();
+    }
+}
+
+handler.enqueue(
+    ProtocolBuilder.buildPaOnCommand(
+        module.address
+    )
+);
+
+handler.enqueue(
+    ProtocolBuilder.buildPaOffCommand(
+        module.address
+    )
+);
+
+handler.enqueue(
+    ProtocolBuilder.buildFrequencyCommand(
+        module.address,
+        module.startFreq,
+        module.stopFreq
+    )
+);
+
+handler.enqueue(
+    ProtocolBuilder.buildRealtimeCommand(
+        module.address
+    )
+);

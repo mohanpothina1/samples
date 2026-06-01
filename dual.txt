@@ -1,1137 +1,528 @@
-// In ControlSystemUI constructor, replace the existing ControlCard handler creation section
+int count = 0;
+		// Control card handlers and UI
+		for (ControlCard card : allCards) {
+			final String cardId = card.id;
+			int startIndex = vswrList.size();
+			String htmlText = "<html><center>CTRL<br>" + cardId + "</center></html>";
+			JLabel label = new JLabel(htmlText);
+			label.setOpaque(true);
+			label.setBackground(Color.RED);
+			label.setForeground(Color.WHITE);
+			label.setPreferredSize(new Dimension(100, 60));
+			
+			count += card.modules.size();
 
-// Control card handlers and UI
-for (ControlCard card : allCards) {
-    final String cardId = card.id;
-    int startIndex = vswrList.size();
-    JLabel label = new JLabel("CTRL: " + cardId);
-    label.setOpaque(true);
-    label.setBackground(Color.RED);
-    label.setForeground(Color.WHITE);
-    label.setPreferredSize(new Dimension(100, 60));
-    label.setFont(new Font("Segoe UI", Font.BOLD, 14));
-    label.setHorizontalAlignment(SwingConstants.CENTER);
-    label.setVerticalAlignment(SwingConstants.CENTER);
-    statusLabels.put(cardId, label);
-    southPanel.add(label);
+			label.setFont(new Font("Segoe UI", Font.BOLD, 14));
+			label.setHorizontalAlignment(SwingConstants.CENTER);
+			label.setVerticalAlignment(SwingConstants.CENTER);
+			statusLabels.put(cardId, label);
+			southPanel.add(label);
 
-    List<JToggleButton> toggles = new ArrayList<>();
+			List<JToggleButton> toggles = new ArrayList<>();
+			
+			boolean hasSpecialBand = false;
+		    for (Module m : card.modules) {
+		        if (isSpecialBand(m.name)) {
+		            hasSpecialBand = true;
+		            break;
+		        }
+		    }
+		    
+		    if (hasSpecialBand) {
+		        // Create ASCII status handler on Port 10
+		        
+		        System.out.println("Setting up SPECIAL band card: " + cardId + " with dual ports");
 
-    // Check if this card has any special band modules
-    boolean hasSpecialBand = false;
-    for (Module m : card.modules) {
-        if (isSpecialBand(m.name)) {
-            hasSpecialBand = true;
-            break;
-        }
+		        
+	            ArrayList<JCheckBox> tempLanBoxes = new ArrayList<>();
+
+	            // Create UI components for this card's modules
+	            for (Module m : card.modules) {
+	                JToggleButton toggle = new JToggleButton(m.name);
+	                toggle.setFont(new Font("Arial", Font.BOLD, 28));
+	                toggle.setForeground(Color.RED);
+	                toggle.setCursor(new Cursor(Cursor.HAND_CURSOR));
+	                toggle.setEnabled(false);
+	                
+	                toggle.addItemListener(e -> {
+	                    if (!toggle.isEnabled()) return;
+	                    
+	                    ControlCardSocketHandler handler = controlHandlers.get(card.id);
+	                    if (handler == null || !handler.isConnected()) return;
+	                    
+	                    boolean isOn = toggle.isSelected();
+	                    toggle.setForeground(isOn ? Color.GREEN : Color.RED);
+	                    
+	                    // Send ASCII command through control port
+	                    String command = isOn ? "CO.PS.S,1" : "CO.PS.S,0";
+	                    handler.enqueueCommand(command.getBytes());
+	                    
+	                    String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+	                    String logMsg = time + " Band: " + m.name + (isOn ? " Powered ON" : " Powered OFF");
+	                    addLog(logMsg);
+	                });
+	                
+	                PA_Panel.add(toggle);
+	                toggles.add(toggle);
+	                
+	                // Add to frequency band panel
+	                JLabel bandsLabel = new JLabel(m.name);
+	                bandsLabel.setFont(new Font("Segoe UI", Font.BOLD, 15));
+	                bandsLabel.setHorizontalAlignment(SwingConstants.CENTER);
+	                freqband_names_panel.add(bandsLabel);
+	                
+	                // LAN checkboxes
+	                JCheckBox lanBox = new JCheckBox("");
+	                lanBox.setHorizontalAlignment(SwingConstants.CENTER);
+	                lanBox.setEnabled(false);
+	                lan_checkbox_panel.add(lanBox);
+	                tempLanBoxes.add(lanBox);
+	                
+	                // VSWR fields
+	                JTextField vswrBox = new JTextField("--");
+	                vswrBox.setHorizontalAlignment(SwingConstants.CENTER);
+	                vswrBox.setEditable(false);
+	                vswrBox.setBackground(Color.WHITE);
+	                vswr_checkbox_panel.add(vswrBox);
+	                vswrList.add(vswrBox);
+	                
+	                // Temperature fields
+	                JTextField therBox = new JTextField("--");
+	                therBox.setHorizontalAlignment(SwingConstants.CENTER);
+	                therBox.setEditable(false);
+	                temp_checkbox_panel.add(therBox);
+	                therBox.setBackground(Color.WHITE);
+
+	                tempList.add(therBox);
+	                
+	                // Forward power fields
+	                JTextField fwdField = new JTextField("--");
+	                fwdField.setHorizontalAlignment(SwingConstants.CENTER);
+	                fwdField.setEditable(false);
+	                fwd_textfields_panel.add(fwdField);
+	                fwdList.add(fwdField);
+	                
+	                // Reverse power fields
+	                JTextField rflField = new JTextField("--");
+	                rflField.setHorizontalAlignment(SwingConstants.CENTER);
+	                rflField.setEditable(false);
+	                rfl_textfields_panel.add(rflField);
+	                rflList.add(rflField);
+	            }
+		    	ASCIIStatusHandler statusHandler = new ASCIIStatusHandler(
+		            card.ip, 
+		            20108,
+		            isConnected -> {
+		                SwingUtilities.invokeLater(() -> {
+		                    JLabel lbl = statusLabels.get(cardId);
+		                    if (lbl != null) {
+		                        lbl.setBackground(isConnected ? Color.GREEN : Color.RED);
+		                    }
+		                    
+		                    for(JCheckBox lanBox : tempLanBoxes) {
+		                    	 lanBox.setIcon(new ColoredBoxIcon(isConnected ? Color.GREEN : Color.RED));
+		                         lanBox.setOpaque(true);
+		                         lanBox.revalidate();
+		                         lanBox.repaint();
+		                    }
+		                    // Enable/disable toggles based on status connection
+		                    List<JToggleButton> btns = toggleMap.get(card.id);
+		                    if (btns != null) {
+		                        for (JToggleButton btn : btns) {
+		                            btn.setEnabled(isConnected);
+		                        }
+		                    }
+		                });
+		            },
+		            data -> {
+		                SwingUtilities.invokeLater(() -> {
+		                    for (int i = 0; i < card.modules.size(); i++) {
+		                        JTextField vswrField = vswrList.get(startIndex + i);
+		                        
+		                        if (!data.paOn) {
+		                            vswrField.setText("--");
+		                            vswrField.setBackground(Color.WHITE);
+		                            vswrField.setForeground(Color.BLACK);
+		                            
+		                            tempList.get(startIndex + i).setText("--");
+		                            fwdList.get(startIndex + i).setText("--");
+		                            rflList.get(startIndex + i).setText("--");
+		                            return;
+		                        }
+		                        
+		                        double vswr = data.vswr;
+		                        vswrField.setText(String.format("%.2f", vswr));
+		                        
+		                        if (vswr >= 3.5) {
+		                            vswrField.setBackground(Color.RED);
+		                            vswrField.setForeground(Color.WHITE);
+		                        } else if (vswr >= 2.5) {
+		                            vswrField.setBackground(Color.YELLOW);
+		                            vswrField.setForeground(Color.BLACK);
+		                        } else {
+		                            vswrField.setBackground(Color.GREEN);
+		                            vswrField.setForeground(Color.BLACK);
+		                        }
+		                        
+		                        tempList.get(startIndex + i).setText(String.valueOf(data.temp));
+		                        fwdList.get(startIndex + i).setText(String.valueOf(data.fwd));
+		                        rflList.get(startIndex + i).setText(String.valueOf(data.rfl));
+		                    }
+		                });
+		            }
+		        );
+		        statusHandler.start();
+		        statusHandler.setLans(tempLanBoxes);
+		        asciiStatusHandlers.put(cardId, statusHandler);
+		    
+		        ControlCardSocketHandler controlHandler = new ControlCardSocketHandler(
+		                card.ip, 
+		                7,   // Port 7 for control commands
+		                null,  // No status command needed
+		                isConnected -> {
+		                    // Optional: Update control connection status
+		                    System.out.println("Control connection to " + cardId + " is " + isConnected);
+		                },
+		                null  // No data callback needed
+		            );
+		            controlHandler.start();
+		            controlHandlers.put(cardId, controlHandler);
+		            cardHandlers.put(cardId, controlHandler);
+		        }
+		            
+		        else {
+		            // Normal single-port operation (existing code)
+		            // ... keep your existing code for regular bands ...
+		            System.out.println("Setting up NORMAL band card: " + cardId + " with single port");
+		            ArrayList<JCheckBox> temp = new ArrayList<>();
+
+		            ControlCardSocketHandler handler = new ControlCardSocketHandler(
+		                    card.ip, 
+		                    card.port,
+		                    hexStringToBytes(card.status_command), 
+		                    isConnected -> {
+		                        updateCardStatus(cardId, isConnected);
+		                        List<JToggleButton> btns = toggleMap.get(card.id);
+		                        if (btns != null) {
+		                            for (JToggleButton btn : btns) {
+		                                btn.setEnabled(isConnected);
+		                                // Send OFF command when disconnected to ensure clean state
+		                                if (!isConnected) {
+		                                    btn.setSelected(false);
+		                                    btn.setForeground(Color.RED);
+		                                }
+		                            }
+		                        }
+		                    }, 
+		                    data ->{
+		                    	  SwingUtilities.invokeLater(() -> {
+		                              for (int i = 0; i < card.modules.size(); i++) {
+		                                  JTextField vswrField = vswrList.get(startIndex + i);
+		                                  
+		                                  if (!data.paOn) {
+		                                      vswrField.setText("--");
+		                                      vswrField.setBackground(Color.WHITE);
+		                                      vswrField.setForeground(Color.BLACK);
+		                                      vswrField.setToolTipText(null);
+		                                      
+		                                      tempList.get(startIndex + i).setText("--");
+		                                      fwdList.get(startIndex + i).setText("--");
+		                                      rflList.get(startIndex + i).setText("--");
+		                                      continue;
+		                                  }
+		                                  
+		                                  double vswr = data.vswr;
+		                                  vswrField.setText(String.valueOf(vswr));
+		                                  
+		                                  if (vswr >= 3.5) {
+		                                      vswrField.setBackground(Color.RED);
+		                                      vswrField.setForeground(Color.WHITE);
+		                                      vswrField.setToolTipText("VSWR CRITICAL");
+		                                  } else if (vswr >= 2.5) {
+		                                      vswrField.setBackground(Color.YELLOW);
+		                                      vswrField.setForeground(Color.BLACK);
+		                                      vswrField.setToolTipText("Warning");
+		                                  } else {
+		                                      vswrField.setBackground(Color.GREEN);
+		                                      vswrField.setForeground(Color.BLACK);
+		                                      vswrField.setToolTipText(null);
+		                                  }
+		                                  
+		                                  tempList.get(startIndex + i).setText(String.valueOf(data.temp));
+		                                  fwdList.get(startIndex + i).setText(String.valueOf(data.fwd));
+		                                  rflList.get(startIndex + i).setText(String.valueOf(data.rfl));
+		                              }
+		                          });
+		                      }
+		                  );
+		            
+		            
+		            handler.setLans(temp);
+		            Thread t = new Thread(handler);
+		            t.start();
+		            cardHandlers.put(card.id, handler);
+		            
+		            // Create UI components for each module in this card
+		            for (int moduleIndex = 0; moduleIndex < card.modules.size(); moduleIndex++) {
+		                Module m = card.modules.get(moduleIndex);
+		                
+		                JToggleButton toggle = new JToggleButton(m.name);
+		                toggle.setFont(new Font("Arial", Font.BOLD, 28));
+		                toggle.setForeground(Color.RED);
+		                toggle.setCursor(new Cursor(Cursor.HAND_CURSOR));
+		                if (!m.name.equalsIgnoreCase("")) {
+		                    toggle.setEnabled(false);
+		                }
+		                
+		                final ControlCardSocketHandler finalHandler = handler;
+		                final int finalModuleIndex = moduleIndex;
+		                
+		                toggle.addItemListener(e -> {
+		                    if (!toggle.isEnabled())
+		                        return;
+		                    
+		                    if (finalHandler == null || !finalHandler.isConnected())
+		                        return;
+		                    
+		                    boolean isOn = toggle.isSelected();
+		                    String command = isOn ? m.power_on : m.power_off;
+		                    
+		                    toggle.setForeground(isOn ? Color.GREEN : Color.RED);
+		                    
+		                    String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+		                    String logMsg = time + " Band: " + m.name + (isOn ? " Powered ON" : " Powered OFF");
+		                    addLog(logMsg);
+		                    
+		                    // Check if this specific module is a special band (though card already marked as non-special)
+		                    if(isSpecialBand(m.name)) {
+		                        splitCmd(command, finalHandler);
+		                    } else {
+		                        finalHandler.enqueueCommand(hexStringToBytes(command));
+		                    }
+		                });
+		                
+		                PA_Panel.add(toggle);
+		                toggles.add(toggle);
+		                
+		                // Add to frequency band panel
+		                JLabel bandsLabel = new JLabel(m.name);
+		                bandsLabel.setFont(new Font("Segoe UI", Font.BOLD, 15));
+		                bandsLabel.setHorizontalAlignment(SwingConstants.CENTER);
+		                freqband_names_panel.add(bandsLabel);
+		                
+		                // LAN checkboxes
+		                JCheckBox lanBox = new JCheckBox("");
+		                temp.add(lanBox);
+		                lanBox.setHorizontalAlignment(SwingConstants.CENTER);
+		                lanBox.setEnabled(false);
+		                lan_checkbox_panel.add(lanBox);
+		                
+		                // VSWR fields
+		                JTextField vswrBox = new JTextField("--");
+		                vswrBox.setHorizontalAlignment(SwingConstants.CENTER);
+		                vswrBox.setEditable(false);
+		                vswrBox.setBackground(Color.WHITE);
+		                vswr_checkbox_panel.add(vswrBox);
+		                vswrList.add(vswrBox);
+		                
+		                // Temperature fields
+		                JTextField therBox = new JTextField("--");
+		                therBox.setHorizontalAlignment(SwingConstants.CENTER);
+		                therBox.setEditable(false);
+		                therBox.setBackground(Color.WHITE);
+		                temp_checkbox_panel.add(therBox);
+		                tempList.add(therBox);
+		                
+		                // Forward power fields
+		                JTextField fwdField = new JTextField("--");
+		                fwdField.setHorizontalAlignment(SwingConstants.CENTER);
+		                fwdField.setEditable(false);
+		                fwdField.setBackground(Color.WHITE);
+		                fwd_textfields_panel.add(fwdField);
+		                fwdList.add(fwdField);
+		                
+		                // Reverse power fields
+		                JTextField rflField = new JTextField("--");
+		                rflField.setHorizontalAlignment(SwingConstants.CENTER);
+		                rflField.setEditable(false);
+		                rflField.setBackground(Color.WHITE);
+		                rfl_textfields_panel.add(rflField);
+		                rflList.add(rflField);
+		            }
+		        }
+		        
+		        toggleMap.put(card.id, toggles);
+		        Thread.sleep(10);
+		            
+		                    }
+		        
+		        
+		
+		
+		freqband_names_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		lan_checkbox_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		vswr_checkbox_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		temp_checkbox_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		fwd_textfields_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		rfl_textfields_panel.setLayout(new GridLayout(count, 0, 0, 0));
+
+		addWindowListener(new WindowAdapter() {
+			@Override
+			public void windowClosing(WindowEvent e) {
+
+				powerOffAllPAs(config); // off command before exit
+			}
+		});
+		setVisible(true);
+	}
+
+
+
+public class ASCIIStatusHandler implements Runnable {
+    private final String ip;
+    private final int port;
+    private volatile HardwareData lastData;
+    private volatile boolean running = true;
+    private volatile boolean connected = false;
+    private Socket socket;
+    private BufferedReader reader;
+    private final Consumer<Boolean> statusCallback;
+    private final Consumer<HardwareData> dataCallback;
+    private ArrayList<JCheckBox> lans; // Add this field
+
+    public ASCIIStatusHandler(String ip, int port, Consumer<Boolean> statusCallback, 
+                              Consumer<HardwareData> dataCallback) {
+        this.ip = ip;
+        this.port = port;
+        this.statusCallback = statusCallback;
+        this.dataCallback = dataCallback;
     }
 
-    // For special bands, we need TWO connections:
-    // - Port 10 for status feedback
-    // - Port 7 for control commands
-    if (hasSpecialBand && card.port == 7) {
-        // Create status handler on port 10
-        ControlCardSocketHandler statusHandler = new ControlCardSocketHandler(
-            card.ip, 
-            10,  // Port 10 for status
-            hexStringToBytes(card.status_command), 
-            isConnected -> {
-                updateCardStatus(cardId + "_status", isConnected);
-                List<JToggleButton> btns = toggleMap.get(card.id);
-                if (btns != null) {
-                    for (JToggleButton btn : btns) {
-                        btn.setEnabled(isConnected);
-                    }
-                }
-            }, 
-            data -> {
-                SwingUtilities.invokeLater(() -> {
-                    for (int i = 0; i < card.modules.size(); i++) {
-                        updateUIWithData(startIndex, i, data);
-                    }
-                });
-            }
-        );
-        
-        // Create control handler on port 7
-        ControlCardSocketHandler controlHandler = new ControlCardSocketHandler(
-            card.ip, 
-            7,   // Port 7 for control
-            null,  // No status command for control port
-            isConnected -> {
-                updateCardStatus(cardId + "_control", isConnected);
-            }, 
-            null  // No data callback for control port
-        );
-        
-        ArrayList<JCheckBox> temp = new ArrayList<>();
-        statusHandler.setLans(temp);
-        
-        Thread statusThread = new Thread(statusHandler);
-        statusThread.start();
-        Thread controlThread = new Thread(controlHandler);
-        controlThread.start();
-        
-        // Store both handlers
-        cardHandlers.put(card.id + "_status", statusHandler);
-        cardHandlers.put(card.id, controlHandler);
-        statusHandlers.put(card.id, statusHandler);
-        controlHandlers.put(card.id, controlHandler);
-        
-        // Store control handler in controlPortHandlers for easy access
-        controlPortHandlers.put(card.id, controlHandler);
-        
-        // Create UI components
-        createUIPanelsForCard(card, toggles, temp, startIndex, panel_3, freqband_names_panel, 
-                              lan_checkbox_panel, vswr_checkbox_panel, ther_checkbox_panel,
-                              fwd_textfields_panel, rsv_textfields_panel);
-        
-    } else {
-        // Normal single-port operation
-        ArrayList<JCheckBox> temp = new ArrayList<>();
-        
-        ControlCardSocketHandler handler = new ControlCardSocketHandler(
-            card.ip, 
-            card.port,
-            hexStringToBytes(card.status_command), 
-            isConnected -> {
-                updateCardStatus(cardId, isConnected);
-                List<JToggleButton> btns = toggleMap.get(card.id);
-                if (btns != null) {
-                    for (JToggleButton btn : btns) {
-                        btn.setEnabled(isConnected);
-                        if (isConnected) {
-                            for(Module m : card.modules) {
-                                if(isSpecialBand(m.name)) {
-                                    splitCmd(m.power_off, handler);
-                                } else {
-                                    handler.enqueueCommand(hexStringToBytes(m.power_off));
-                                }
-                            }
-                        }
-                    }
-                }
-            }, 
-            data -> {
-                SwingUtilities.invokeLater(() -> {
-                    for (int i = 0; i < card.modules.size(); i++) {
-                        updateUIWithData(startIndex, i, data);
-                    }
-                });
-            }
-        );
-        
-        handler.setLans(temp);
-        Thread t = new Thread(handler);
-        t.start();
-        cardHandlers.put(card.id, handler);
-        
-        createUIPanelsForCard(card, toggles, temp, startIndex, panel_3, freqband_names_panel,
-                              lan_checkbox_panel, vswr_checkbox_panel, ther_checkbox_panel,
-                              fwd_textfields_panel, rsv_textfields_panel);
+    public void start() {
+        new Thread(this).start();
     }
     
-    toggleMap.put(card.id, toggles);
-    Thread.sleep(10);
-}
-
-Also add these helper methods to your ControlSystemUI class:
-
-private void updateUIWithData(int startIndex, int moduleIndex, HardwareData data) {
-    JTextField vswrField = vswrList.get(startIndex + moduleIndex);
-    
-    if (!data.paOn) {
-        vswrField.setText("--");
-        vswrField.setBackground(Color.WHITE);
-        vswrField.setForeground(Color.BLACK);
-        vswrField.setToolTipText(null);
-        therList.get(startIndex + moduleIndex).setText("--");
-        fwdList.get(startIndex + moduleIndex).setText("--");
-        rsvList.get(startIndex + moduleIndex).setText("--");
-        return;
+    public void setLans(ArrayList<JCheckBox> lans) {
+        this.lans = lans;
     }
-    
-    double vswr = data.vswr;
-    vswrField.setText(String.valueOf(vswr));
-    
-    if (vswr >= 3.5) {
-        vswrField.setBackground(Color.RED);
-        vswrField.setForeground(Color.WHITE);
-        vswrField.setToolTipText("VSWR CRITICAL");
-    } else if (vswr >= 2.5) {
-        vswrField.setBackground(Color.YELLOW);
-        vswrField.setForeground(Color.BLACK);
-        vswrField.setToolTipText("Warning");
-    } else {
-        vswrField.setBackground(Color.GREEN);
-        vswrField.setForeground(Color.BLACK);
+
+    public void shutdown() {
+        running = false;
+        closeSocket();
     }
-    
-    therList.get(startIndex + moduleIndex).setText(String.valueOf(data.temp));
-    fwdList.get(startIndex + moduleIndex).setText(String.valueOf(data.fwd));
-    rsvList.get(startIndex + moduleIndex).setText(String.valueOf(data.rfl));
-}
 
-private void createUIPanelsForCard(ControlCard card, List<JToggleButton> toggles, 
-                                   ArrayList<JCheckBox> temp, int startIndex,
-                                   JPanel panel_3, JPanel freqband_names_panel,
-                                   JPanel lan_checkbox_panel, JPanel vswr_checkbox_panel,
-                                   JPanel ther_checkbox_panel, JPanel fwd_textfields_panel,
-                                   JPanel rsv_textfields_panel) {
-    
-    for (Module m : card.modules) {
-        JToggleButton toggle = new JToggleButton(m.name);
-        toggle.setFont(new Font("Arial", Font.BOLD, 28));
-        toggle.setForeground(Color.RED);
-        toggle.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        if (!m.name.equalsIgnoreCase("")) {
-            toggle.setEnabled(false);
-        }
-        toggle.setForeground(Color.RED);
-
-        final ControlCardSocketHandler handler = controlPortHandlers.containsKey(card.id) ? 
-                                                   controlPortHandlers.get(card.id) : 
-                                                   cardHandlers.get(card.id);
-        
-        toggle.addItemListener(e -> {
-            if (!toggle.isEnabled())
-                return;
-
-            if (handler == null || !handler.isConnected())
-                return;
-            
-            boolean isOn = toggle.isSelected();
-            String command = isOn ? m.power_on : m.power_off;
-            toggle.setForeground(isOn ? Color.GREEN : Color.RED);
-            
-            String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-            String logMsg = time + " Band: " + m.name + (isOn ? " Powered On" : " Powered OFF");
-            addLog(logMsg);
-            
-            if(isSpecialBand(m.name)) {
-                splitCmd(command, handler);
-            } else {
-                handler.enqueueCommand(hexStringToBytes(command));
-            }
-        });
-        
-        panel_3.add(toggle);
-        toggles.add(toggle);
-        
-        // Add to frequency band panel
-        JLabel bandsLabel = new JLabel(m.name);
-        bandsLabel.setFont(new Font("Segoe UI", Font.BOLD, 15));
-        bandsLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        freqBandsLabels.put(card.id, bandsLabel);
-        freqband_names_panel.add(bandsLabel);
-        
-        // LAN checkboxes
-        JCheckBox lanBox = new JCheckBox("");
-        temp.add(lanBox);
-        lanBox.setHorizontalAlignment(SwingConstants.CENTER);
-        lanBox.setEnabled(false);
-        lan_checkbox_panel.add(lanBox);
-        
-        // VSWR fields
-        JTextField vswrBox = new JTextField("--");
-        vswrBox.setHorizontalAlignment(SwingConstants.CENTER);
-        vswrBox.setEditable(false);
-        vswrBox.setBackground(Color.WHITE);
-        vswr_checkbox_panel.add(vswrBox);
-        vswrList.add(vswrBox);
-        
-        // Temperature fields
-        JTextField therBox = new JTextField("--");
-        therBox.setHorizontalAlignment(SwingConstants.CENTER);
-        therBox.setEditable(false);
-        therBox.setBackground(Color.WHITE);
-        ther_checkbox_panel.add(therBox);
-        therList.add(therBox);
-        
-        // Forward power fields
-        JTextField fwdField = new JTextField("--");
-        fwdField.setHorizontalAlignment(SwingConstants.CENTER);
-        fwdField.setEditable(false);
-        fwdField.setBackground(Color.WHITE);
-        fwd_textfields_panel.add(fwdField);
-        fwdList.add(fwdField);
-        
-        // Reverse power fields
-        JTextField rflField = new JTextField("--");
-        rflField.setHorizontalAlignment(SwingConstants.CENTER);
-        rflField.setEditable(false);
-        rflField.setBackground(Color.WHITE);
-        rsv_textfields_panel.add(rflField);
-        rsvList.add(rflField);
+    public boolean isConnected() {
+        return connected;
     }
-}
 
-Only modify ControlSystemUI.java:
-
-// In ControlSystemUI constructor, replace the section where you create control card handlers
-// Look for the loop: "for (ControlCard card : allCards) {"
-
-for (ControlCard card : allCards) {
-    final String cardId = card.id;
-    int startIndex = vswrList.size();
-    
-    // Create status label
-    JLabel label = new JLabel("CTRL: " + cardId);
-    label.setOpaque(true);
-    label.setBackground(Color.RED);
-    label.setForeground(Color.WHITE);
-    label.setPreferredSize(new Dimension(100, 60));
-    label.setFont(new Font("Segoe UI", Font.BOLD, 14));
-    label.setHorizontalAlignment(SwingConstants.CENTER);
-    label.setVerticalAlignment(SwingConstants.CENTER);
-    statusLabels.put(cardId, label);
-    southPanel.add(label);
-
-    List<JToggleButton> toggles = new ArrayList<>();
-    
-    // Create UI components first (checkboxes, text fields, etc.)
-    ArrayList<JCheckBox> temp = new ArrayList<>();
-    
-    for (int i = 0; i < card.modules.size(); i++) {
-        Module m = card.modules.get(i);
-        
-        // Create toggle button
-        JToggleButton toggle = new JToggleButton(m.name);
-        toggle.setFont(new Font("Arial", Font.BOLD, 28));
-        toggle.setForeground(Color.RED);
-        toggle.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        toggle.setEnabled(false);
-        panel_3.add(toggle);
-        toggles.add(toggle);
-        
-        // Frequency band label
-        JLabel bandsLabel = new JLabel(m.name);
-        bandsLabel.setFont(new Font("Segoe UI", Font.BOLD, 15));
-        bandsLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        freqband_names_panel.add(bandsLabel);
-        
-        // LAN checkbox
-        JCheckBox lanBox = new JCheckBox("");
-        lanBox.setHorizontalAlignment(SwingConstants.CENTER);
-        lanBox.setEnabled(false);
-        lan_checkbox_panel.add(lanBox);
-        temp.add(lanBox);
-        
-        // VSWR field
-        JTextField vswrBox = new JTextField("--");
-        vswrBox.setHorizontalAlignment(SwingConstants.CENTER);
-        vswrBox.setEditable(false);
-        vswrBox.setBackground(Color.WHITE);
-        vswr_checkbox_panel.add(vswrBox);
-        vswrList.add(vswrBox);
-        
-        // Temperature field
-        JTextField therBox = new JTextField("--");
-        therBox.setHorizontalAlignment(SwingConstants.CENTER);
-        therBox.setEditable(false);
-        therBox.setBackground(Color.WHITE);
-        ther_checkbox_panel.add(therBox);
-        therList.add(therBox);
-        
-        // Forward power field
-        JTextField fwdField = new JTextField("--");
-        fwdField.setHorizontalAlignment(SwingConstants.CENTER);
-        fwdField.setEditable(false);
-        fwdField.setBackground(Color.WHITE);
-        fwd_textfields_panel.add(fwdField);
-        fwdList.add(fwdField);
-        
-        // Reverse power field
-        JTextField rflField = new JTextField("--");
-        rflField.setHorizontalAlignment(SwingConstants.CENTER);
-        rflField.setEditable(false);
-        rflField.setBackground(Color.WHITE);
-        rsv_textfields_panel.add(rflField);
-        rsvList.add(rflField);
+    public HardwareData getLastData() {
+        return lastData;
     }
-    
-    // Check if this card needs dual ports (special bands on port 7)
-    boolean needsDualPorts = false;
-    for (Module m : card.modules) {
-        if (isSpecialBand(m.name)) {
-            needsDualPorts = true;
-            break;
-        }
-    }
-    
-    // Handle dual port connection for special bands
-    if (needsDualPorts && card.port == 7) {
-        // Create status handler on port 10
-        ControlCardSocketHandler statusHandler = new ControlCardSocketHandler(
-            card.ip, 
-            10,  // Port 10 for status feedback
-            hexStringToBytes(card.status_command), 
-            isConnected -> {
-                updateCardStatus(cardId, isConnected);
-                for (JToggleButton btn : toggles) {
-                    btn.setEnabled(isConnected);
-                }
-            }, 
-            data -> {
-                SwingUtilities.invokeLater(() -> {
-                    for (int i = 0; i < card.modules.size(); i++) {
-                        updateModuleData(startIndex, i, data);
-                    }
-                });
-            }
-        );
-        
-        // Create control handler on port 7
-        ControlCardSocketHandler controlHandler = new ControlCardSocketHandler(
-            card.ip, 
-            7,   // Port 7 for control commands
-            null,  // No status polling on control port
-            isConnected -> {
-                // Control port connection status
-                System.out.println("Control port for " + cardId + " connected: " + isConnected);
-            }, 
-            null  // No data processing for control port
-        );
-        
-        statusHandler.setLans(temp);
-        controlHandler.setLans(temp);
-        
-        // Start both threads
-        new Thread(statusHandler).start();
-        new Thread(controlHandler).start();
-        
-        // Store handlers
-        cardHandlers.put(cardId, statusHandler);  // Main handler reference
-        controlHandlers.put(cardId, controlHandler);  // Separate control handler
-        
-        // Set up toggle button actions using control handler
-        for (int i = 0; i < card.modules.size(); i++) {
-            final int idx = i;
-            final Module m = card.modules.get(i);
-            final JToggleButton toggle = toggles.get(i);
-            
-            toggle.addItemListener(e -> {
-                if (!toggle.isEnabled()) return;
-                
-                ControlCardSocketHandler ctrlHandler = controlHandlers.get(cardId);
-                if (ctrlHandler == null || !ctrlHandler.isConnected()) {
-                    System.out.println("Control handler not connected for " + cardId);
-                    return;
-                }
-                
-                boolean isOn = toggle.isSelected();
-                String command = isOn ? m.power_on : m.power_off;
-                toggle.setForeground(isOn ? Color.GREEN : Color.RED);
-                
-                String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-                String logMsg = time + " Band: " + m.name + (isOn ? " Powered On" : " Powered OFF");
-                addLog(logMsg);
-                
-                // Send command through control port (port 7)
-                if (isSpecialBand(m.name)) {
-                    splitCmd(command, ctrlHandler);
-                } else {
-                    ctrlHandler.enqueueCommand(hexStringToBytes(command));
-                }
-            });
-        }
-        
-    } else {
-        // Normal single port operation
-        ControlCardSocketHandler handler = new ControlCardSocketHandler(
-            card.ip, 
-            card.port,
-            hexStringToBytes(card.status_command), 
-            isConnected -> {
-                updateCardStatus(cardId, isConnected);
-                for (JToggleButton btn : toggles) {
-                    btn.setEnabled(isConnected);
-                    if (isConnected) {
-                        // Send initial off commands
-                        for (Module m : card.modules) {
-                            handler.enqueueCommand(hexStringToBytes(m.power_off));
-                        }
-                    }
-                }
-            }, 
-            data -> {
-                SwingUtilities.invokeLater(() -> {
-                    for (int i = 0; i < card.modules.size(); i++) {
-                        updateModuleData(startIndex, i, data);
-                    }
-                });
-            }
-        );
-        
-        handler.setLans(temp);
-        new Thread(handler).start();
-        cardHandlers.put(cardId, handler);
-        
-        // Set up toggle button actions
-        for (int i = 0; i < card.modules.size(); i++) {
-            final Module m = card.modules.get(i);
-            final JToggleButton toggle = toggles.get(i);
-            
-            toggle.addItemListener(e -> {
-                if (!toggle.isEnabled()) return;
-                if (handler == null || !handler.isConnected()) return;
-                
-                boolean isOn = toggle.isSelected();
-                String command = isOn ? m.power_on : m.power_off;
-                toggle.setForeground(isOn ? Color.GREEN : Color.RED);
-                
-                String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-                String logMsg = time + " Band: " + m.name + (isOn ? " Powered On" : " Powered OFF");
-                addLog(logMsg);
-                
-                handler.enqueueCommand(hexStringToBytes(command));
-            });
-        }
-    }
-    
-    toggleMap.put(card.id, toggles);
-    Thread.sleep(10);
-}
 
-private void updateModuleData(int startIndex, int moduleIndex, HardwareData data) {
-    int idx = startIndex + moduleIndex;
-    
-    if (idx >= vswrList.size()) return;
-    
-    JTextField vswrField = vswrList.get(idx);
-    
-    if (!data.paOn) {
-        vswrField.setText("--");
-        vswrField.setBackground(Color.WHITE);
-        vswrField.setForeground(Color.BLACK);
-        vswrField.setToolTipText(null);
-        therList.get(idx).setText("--");
-        fwdList.get(idx).setText("--");
-        rsvList.get(idx).setText("--");
-        return;
-    }
-    
-    double vswr = data.vswr;
-    vswrField.setText(String.valueOf(vswr));
-    
-    if (vswr >= 3.5) {
-        vswrField.setBackground(Color.RED);
-        vswrField.setForeground(Color.WHITE);
-        vswrField.setToolTipText("VSWR CRITICAL");
-    } else if (vswr >= 2.5) {
-        vswrField.setBackground(Color.YELLOW);
-        vswrField.setForeground(Color.BLACK);
-        vswrField.setToolTipText("Warning");
-    } else {
-        vswrField.setBackground(Color.GREEN);
-        vswrField.setForeground(Color.BLACK);
-    }
-    
-    therList.get(idx).setText(String.valueOf(data.temp));
-    fwdList.get(idx).setText(String.valueOf(data.fwd));
-    rsvList.get(idx).setText(String.valueOf(data.rfl));
-}
-
-------------------------------------------------
-Here's the corrected isSpecialBand() method:
-
-private boolean isSpecialBand(String name) {
-    return name.equals("136-174MHz") ||
-           name.equals("430-470MHz") ||
-           name.equals("100-500MHz") ||
-           name.equals("2400-2500MHz");
-}
-
-And in the handler creation logic, the condition should be:
-
-
-// Check if this card has ANY special band modules (the exact ones listed above)
-boolean needsDualPorts = false;
-for (Module m : card.modules) {
-    if (isSpecialBand(m.name)) {
-        needsDualPorts = true;
-        break;
-    }
-}
-
-// Only use dual ports if:
-// 1. The card has special bands, AND
-// 2. The card's port is 7 (as per your requirement)
-if (needsDualPorts && card.port == 7) {
-    // Create dual-port handlers (status on port 10, control on port 7)
-} else {
-    // Normal single-port operation
-}
-
----------------------
-Modified ControlSystemUI.java - Special Band Handler Section
-
-// Check if this card needs dual ports (special bands on port 7)
-boolean needsDualPorts = false;
-for (Module m : card.modules) {
-    if (isSpecialBand(m.name)) {
-        needsDualPorts = true;
-        break;
-    }
-}
-
-// Handle dual port connection for special bands
-if (needsDualPorts && card.port == 7) {
-    // Create status handler on port 10 - NO status command needed!
-    // The device automatically streams data when connected to port 10
-    ControlCardSocketHandler statusHandler = new ControlCardSocketHandler(
-        card.ip, 
-        10,  // Port 10 for automatic status streaming
-        null,  // NO status command - device streams automatically
-        isConnected -> {
-            updateCardStatus(cardId, isConnected);
-            System.out.println("Status port (10) connected for " + cardId + " - Auto-streaming started");
-        }, 
-        data -> {
+    private void updateLanStatus(boolean connected) {
+        if (lans != null) {
             SwingUtilities.invokeLater(() -> {
-                // Only update UI if PA is ON (real values)
-                if (data.paOn) {
-                    for (int i = 0; i < card.modules.size(); i++) {
-                        updateModuleData(startIndex, i, data);
+                for (JCheckBox lanBox : lans) {
+                    lanBox.setIcon(new ColoredBoxIcon(connected ? Color.GREEN : Color.RED));
+                    lanBox.setOpaque(true);
+                    lanBox.revalidate();
+                    lanBox.repaint();
+                }
+            });
+        }
+    }
+    
+    @Override
+    public void run() {
+        boolean lastStatus = false;
+        
+        while (running) {
+            try {
+                socket = new Socket();
+                socket.connect(new InetSocketAddress(ip, port), 2000);
+                reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                
+                connected = true;
+                System.out.println("ASCII Status connected to " + ip + ":" + port);
+                updateLanStatus(true);
+                
+                if (!lastStatus && statusCallback != null) {
+                    statusCallback.accept(true);
+                    lastStatus = true;
+                }
+                
+                // Read ASCII lines (received every 300ms)
+                String line;
+                while (running && !socket.isClosed() && (line = reader.readLine()) != null) {
+                    if (line.startsWith("CO.HL.G")) {
+                        HardwareData data = parseASCIIStatus(line);
+                        this.lastData = data;
+                        if (dataCallback != null) {
+                            dataCallback.accept(data);
+                        }
+                        System.out.println("Status: " + line);
                     }
+                }
+                
+            } catch (Exception e) {
+                System.out.println("ASCII Status connection lost: " + ip + ":" + port);
+                connected = false;
+                updateLanStatus(false);
+                if (lastStatus && statusCallback != null) {
+                    statusCallback.accept(false);
+                    lastStatus = false;
+                }
+                
+                closeSocket();
+                
+                try {
+                    Thread.sleep(5000); // Reconnect every 5 seconds
+                } catch (InterruptedException ignored) {}
+            }
+        }
+    }
+    
+    private HardwareData parseASCIIStatus(String statusLine) {
+        // Format: CO.HL.G,PAOnOff,vswr_alarm,temp_alarm,FwdPower,RefPower
+        // Example: CO.HL.G,1,0,0,50.00,30.00
+        HardwareData data = new HardwareData();
+        
+        try {
+            String[] parts = statusLine.split(",");
+            if (parts.length >= 6) {
+                int paOnOff = Integer.parseInt(parts[1].trim());
+                data.paOn = (paOnOff == 1);
+                
+                int vswrAlarm = Integer.parseInt(parts[2].trim());
+                int tempAlarm = Integer.parseInt(parts[3].trim());
+                
+                data.fwd = (int) Double.parseDouble(parts[4].trim());
+                data.rfl = (int) Double.parseDouble(parts[5].trim());
+                
+                // Calculate VSWR from forward and reflected power
+                if (data.rfl > 0 && data.fwd > 0) {
+                    double sqrtReflected = Math.sqrt(data.rfl);
+                    double sqrtForward = Math.sqrt(data.fwd);
+                    data.vswr = (sqrtForward + sqrtReflected) / (sqrtForward - sqrtReflected);
+                    if (data.vswr < 1.0) data.vswr = 1.0;
                 } else {
-                    // Show default/minus values when PA is OFF
-                    for (int i = 0; i < card.modules.size(); i++) {
-                        clearModuleData(startIndex, i);
-                    }
+                    data.vswr = 1.0;
                 }
-            });
+                
+                // Temperature from alarm (you might need to map this properly)
+                data.temp = tempAlarm; // Placeholder - adjust based on your actual temp data
+            }
+        } catch (Exception e) {
+            System.out.println("Error parsing status: " + statusLine);
         }
-    );
-    
-    // Create control handler on port 7 for ON/OFF commands only
-    ControlCardSocketHandler controlHandler = new ControlCardSocketHandler(
-        card.ip, 
-        7,   // Port 7 for control commands
-        null,  // No status polling needed
-        isConnected -> {
-            System.out.println("Control port (7) connected for " + cardId);
-        }, 
-        null  // No data processing for control port
-    );
-    
-    ArrayList<JCheckBox> temp = new ArrayList<>();
-    statusHandler.setLans(temp);
-    controlHandler.setLans(temp);
-    
-    // Start both threads
-    new Thread(statusHandler).start();
-    new Thread(controlHandler).start();
-    
-    // Store handlers
-    cardHandlers.put(cardId, statusHandler);  // Main handler for status
-    controlHandlers.put(cardId, controlHandler);  // Control handler
-    
-    // Set up toggle button actions using control handler (port 7)
-    for (int i = 0; i < card.modules.size(); i++) {
-        final int idx = i;
-        final Module m = card.modules.get(i);
-        final JToggleButton toggle = toggles.get(i);
         
-        toggle.addItemListener(e -> {
-            if (!toggle.isEnabled()) return;
-            
-            ControlCardSocketHandler ctrlHandler = controlHandlers.get(cardId);
-            if (ctrlHandler == null || !ctrlHandler.isConnected()) {
-                System.out.println("Control handler not connected for " + cardId);
-                return;
-            }
-            
-            boolean isOn = toggle.isSelected();
-            String command = isOn ? m.power_on : m.power_off;
-            toggle.setForeground(isOn ? Color.GREEN : Color.RED);
-            
-            String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-            String logMsg = time + " Band: " + m.name + (isOn ? " Powered On" : " Powered OFF");
-            addLog(logMsg);
-            
-            // Send command through control port (port 7)
-            if (isSpecialBand(m.name)) {
-                splitCmd(command, ctrlHandler);
-            } else {
-                ctrlHandler.enqueueCommand(hexStringToBytes(command));
-            }
-        });
-    }
-}
-
-
-private void clearModuleData(int startIndex, int moduleIndex) {
-    int idx = startIndex + moduleIndex;
-    
-    if (idx >= vswrList.size()) return;
-    
-    // Show default/minus values when PA is OFF
-    vswrList.get(idx).setText("--");
-    vswrList.get(idx).setBackground(Color.WHITE);
-    vswrList.get(idx).setForeground(Color.BLACK);
-    vswrList.get(idx).setToolTipText(null);
-    
-    therList.get(idx).setText("--");
-    fwdList.get(idx).setText("--");
-    rsvList.get(idx).setText("--");
-}
-
-private void updateModuleData(int startIndex, int moduleIndex, HardwareData data) {
-    int idx = startIndex + moduleIndex;
-    
-    if (idx >= vswrList.size()) return;
-    
-    JTextField vswrField = vswrList.get(idx);
-    
-    if (!data.paOn) {
-        clearModuleData(startIndex, moduleIndex);
-        return;
+        return data;
     }
     
-    double vswr = data.vswr;
-    vswrField.setText(String.valueOf(vswr));
-    
-    if (vswr >= 3.5) {
-        vswrField.setBackground(Color.RED);
-        vswrField.setForeground(Color.WHITE);
-        vswrField.setToolTipText("VSWR CRITICAL");
-    } else if (vswr >= 2.5) {
-        vswrField.setBackground(Color.YELLOW);
-        vswrField.setForeground(Color.BLACK);
-        vswrField.setToolTipText("Warning");
-    } else {
-        vswrField.setBackground(Color.GREEN);
-        vswrField.setForeground(Color.BLACK);
-        vswrField.setToolTipText(null);
+    private void closeSocket() {
+        try {
+            if (reader != null) reader.close();
+            if (socket != null) socket.close();
+        } catch (Exception ignored) {}
     }
-    
-    therList.get(idx).setText(String.valueOf(data.temp));
-    fwdList.get(idx).setText(String.valueOf(data.fwd));
-    rsvList.get(idx).setText(String.valueOf(data.rfl));
-}
-
---------------
-// In ControlSystemUI constructor, replace the control card handler creation section
-
-for (ControlCard card : allCards) {
-    final String cardId = card.id;
-    int startIndex = vswrList.size();
-    
-    // Create status label
-    JLabel label = new JLabel("CTRL: " + cardId);
-    label.setOpaque(true);
-    label.setBackground(Color.RED);
-    label.setForeground(Color.WHITE);
-    label.setPreferredSize(new Dimension(100, 60));
-    label.setFont(new Font("Segoe UI", Font.BOLD, 14));
-    label.setHorizontalAlignment(SwingConstants.CENTER);
-    label.setVerticalAlignment(SwingConstants.CENTER);
-    statusLabels.put(cardId, label);
-    southPanel.add(label);
-
-    List<JToggleButton> toggles = new ArrayList<>();
-    ArrayList<JCheckBox> temp = new ArrayList<>();
-    
-    // Create UI components for each module
-    for (int i = 0; i < card.modules.size(); i++) {
-        Module m = card.modules.get(i);
-        
-        // Toggle button
-        JToggleButton toggle = new JToggleButton(m.name);
-        toggle.setFont(new Font("Arial", Font.BOLD, 28));
-        toggle.setForeground(Color.RED);
-        toggle.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        toggle.setEnabled(false);
-        panel_3.add(toggle);
-        toggles.add(toggle);
-        
-        // Frequency band label
-        JLabel bandsLabel = new JLabel(m.name);
-        bandsLabel.setFont(new Font("Segoe UI", Font.BOLD, 15));
-        bandsLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        freqband_names_panel.add(bandsLabel);
-        
-        // LAN checkbox
-        JCheckBox lanBox = new JCheckBox("");
-        lanBox.setHorizontalAlignment(SwingConstants.CENTER);
-        lanBox.setEnabled(false);
-        lan_checkbox_panel.add(lanBox);
-        temp.add(lanBox);
-        
-        // VSWR field
-        JTextField vswrBox = new JTextField("--");
-        vswrBox.setHorizontalAlignment(SwingConstants.CENTER);
-        vswrBox.setEditable(false);
-        vswrBox.setBackground(Color.WHITE);
-        vswr_checkbox_panel.add(vswrBox);
-        vswrList.add(vswrBox);
-        
-        // Temperature field
-        JTextField therBox = new JTextField("--");
-        therBox.setHorizontalAlignment(SwingConstants.CENTER);
-        therBox.setEditable(false);
-        therBox.setBackground(Color.WHITE);
-        ther_checkbox_panel.add(therBox);
-        therList.add(therBox);
-        
-        // Forward power field
-        JTextField fwdField = new JTextField("--");
-        fwdField.setHorizontalAlignment(SwingConstants.CENTER);
-        fwdField.setEditable(false);
-        fwdField.setBackground(Color.WHITE);
-        fwd_textfields_panel.add(fwdField);
-        fwdList.add(fwdField);
-        
-        // Reverse power field
-        JTextField rflField = new JTextField("--");
-        rflField.setHorizontalAlignment(SwingConstants.CENTER);
-        rflField.setEditable(false);
-        rflField.setBackground(Color.WHITE);
-        rsv_textfields_panel.add(rflField);
-        rsvList.add(rflField);
-    }
-    
-    // Check if this card has special bands (136-174MHz, 430-470MHz, 100-500MHz, 2400-2500MHz)
-    boolean isSpecialBandCard = false;
-    for (Module m : card.modules) {
-        if (isSpecialBand(m.name)) {
-            isSpecialBandCard = true;
-            break;
-        }
-    }
-    
-    // SPECIAL BANDS: Dual port connection (Port 10 for status, Port 7 for control)
-    if (isSpecialBandCard && card.port == 7) {
-        System.out.println("DUAL PORT MODE for " + cardId + " - " + card.modules.get(0).name);
-        
-        // Step 1: Connect to port 10 for automatic status feedback
-        ControlCardSocketHandler statusHandler = new ControlCardSocketHandler(
-            card.ip, 
-            10,  // Port 10 - Auto-status feedback
-            null,  // No status command needed - device auto-streams
-            isConnected -> {
-                updateCardStatus(cardId, isConnected);
-                System.out.println("Status port (10) connected for " + cardId + " - Auto-feedback enabled");
-            }, 
-            data -> {
-                SwingUtilities.invokeLater(() -> {
-                    // Update UI with real values only when PA is ON
-                    if (data.paOn) {
-                        for (int i = 0; i < card.modules.size(); i++) {
-                            updateModuleData(startIndex, i, data);
-                        }
-                    } else {
-                        // Show default values when PA is OFF
-                        for (int i = 0; i < card.modules.size(); i++) {
-                            clearModuleData(startIndex, i);
-                        }
-                    }
-                });
-            }
-        );
-        
-        // Step 2: Connect to port 7 for PA control
-        ControlCardSocketHandler controlHandler = new ControlCardSocketHandler(
-            card.ip, 
-            7,   // Port 7 - Control commands
-            null,  // No status polling needed
-            isConnected -> {
-                System.out.println("Control port (7) connected for " + cardId + " - Ready to control PA");
-                // Enable toggles only when control port is connected
-                for (JToggleButton btn : toggles) {
-                    btn.setEnabled(isConnected);
-                }
-            }, 
-            null  // No data processing for control port
-        );
-        
-        statusHandler.setLans(temp);
-        controlHandler.setLans(temp);
-        
-        // Start both connections
-        new Thread(statusHandler).start();
-        new Thread(controlHandler).start();
-        
-        // Store handlers
-        cardHandlers.put(cardId, statusHandler);
-        controlHandlers.put(cardId, controlHandler);
-        
-        // Setup toggle button actions using control port (port 7)
-        for (int i = 0; i < card.modules.size(); i++) {
-            final Module m = card.modules.get(i);
-            final JToggleButton toggle = toggles.get(i);
-            
-            toggle.addItemListener(e -> {
-                if (!toggle.isEnabled()) return;
-                
-                ControlCardSocketHandler ctrlHandler = controlHandlers.get(cardId);
-                if (ctrlHandler == null || !ctrlHandler.isConnected()) {
-                    System.out.println("Control port not ready for " + cardId);
-                    return;
-                }
-                
-                boolean isOn = toggle.isSelected();
-                String command = isOn ? m.power_on : m.power_off;
-                toggle.setForeground(isOn ? Color.GREEN : Color.RED);
-                
-                String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-                String logMsg = time + " Band: " + m.name + (isOn ? " Powered On" : " Powered OFF");
-                addLog(logMsg);
-                
-                // Send command through control port (port 7)
-                if (isSpecialBand(m.name)) {
-                    splitCmd(command, ctrlHandler);
-                } else {
-                    ctrlHandler.enqueueCommand(hexStringToBytes(command));
-                }
-            });
-        }
-    } 
-    // NORMAL BANDS: Single port operation (original behavior)
-    else {
-        System.out.println("SINGLE PORT MODE for " + cardId + " - " + card.modules.get(0).name);
-        
-        ControlCardSocketHandler handler = new ControlCardSocketHandler(
-            card.ip, 
-            card.port,
-            hexStringToBytes(card.status_command), 
-            isConnected -> {
-                updateCardStatus(cardId, isConnected);
-                for (JToggleButton btn : toggles) {
-                    btn.setEnabled(isConnected);
-                    if (isConnected) {
-                        // Send initial off commands
-                        for (Module m : card.modules) {
-                            handler.enqueueCommand(hexStringToBytes(m.power_off));
-                        }
-                    }
-                }
-            }, 
-            data -> {
-                SwingUtilities.invokeLater(() -> {
-                    for (int i = 0; i < card.modules.size(); i++) {
-                        updateModuleData(startIndex, i, data);
-                    }
-                });
-            }
-        );
-        
-        handler.setLans(temp);
-        new Thread(handler).start();
-        cardHandlers.put(cardId, handler);
-        
-        // Setup toggle button actions
-        for (int i = 0; i < card.modules.size(); i++) {
-            final Module m = card.modules.get(i);
-            final JToggleButton toggle = toggles.get(i);
-            
-            toggle.addItemListener(e -> {
-                if (!toggle.isEnabled()) return;
-                if (handler == null || !handler.isConnected()) return;
-                
-                boolean isOn = toggle.isSelected();
-                String command = isOn ? m.power_on : m.power_off;
-                toggle.setForeground(isOn ? Color.GREEN : Color.RED);
-                
-                String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-                String logMsg = time + " Band: " + m.name + (isOn ? " Powered On" : " Powered OFF");
-                addLog(logMsg);
-                
-                handler.enqueueCommand(hexStringToBytes(command));
-            });
-        }
-    }
-    
-    toggleMap.put(card.id, toggles);
-    Thread.sleep(10);
-}
-
-
-private boolean isSpecialBand(String name) {
-    return name.equals("136-174MHz") ||
-           name.equals("430-470MHz") ||
-           name.equals("100-500MHz") ||
-           name.equals("2400-2500MHz");
-}
-
-private void clearModuleData(int startIndex, int moduleIndex) {
-    int idx = startIndex + moduleIndex;
-    if (idx >= vswrList.size()) return;
-    
-    vswrList.get(idx).setText("--");
-    vswrList.get(idx).setBackground(Color.WHITE);
-    vswrList.get(idx).setForeground(Color.BLACK);
-    therList.get(idx).setText("--");
-    fwdList.get(idx).setText("--");
-    rsvList.get(idx).setText("--");
-}
-
-private void updateModuleData(int startIndex, int moduleIndex, HardwareData data) {
-    int idx = startIndex + moduleIndex;
-    if (idx >= vswrList.size()) return;
-    
-    if (!data.paOn) {
-        clearModuleData(startIndex, moduleIndex);
-        return;
-    }
-    
-    JTextField vswrField = vswrList.get(idx);
-    double vswr = data.vswr;
-    vswrField.setText(String.valueOf(vswr));
-    
-    if (vswr >= 3.5) {
-        vswrField.setBackground(Color.RED);
-        vswrField.setForeground(Color.WHITE);
-        vswrField.setToolTipText("VSWR CRITICAL");
-    } else if (vswr >= 2.5) {
-        vswrField.setBackground(Color.YELLOW);
-        vswrField.setForeground(Color.BLACK);
-        vswrField.setToolTipText("Warning");
-    } else {
-        vswrField.setBackground(Color.GREEN);
-        vswrField.setForeground(Color.BLACK);
-        vswrField.setToolTipText(null);
-    }
-    
-    therList.get(idx).setText(String.valueOf(data.temp));
-    fwdList.get(idx).setText(String.valueOf(data.fwd));
-    rsvList.get(idx).setText(String.valueOf(data.rfl));
-}
-
-
-Starting Control System...
-
-[SPECIAL BAND] ctrl_01_01 (136-174MHz)
-→ Connecting to 192.168.1.13:10 (Status port)
-→ Status port connected! Auto-feedback enabled
-→ Connecting to 192.168.1.13:7 (Control port)
-→ Control port connected! Ready to control PA
-→ UI: Toggle buttons enabled
-
-[NORMAL BAND] ctrl_02_02 (5470-5725MHz)
-→ Connecting to 172.232.50.24:20108 (Single port)
-→ Connected! Status polling started
-→ UI: Toggle buttons enabled
-
-User clicks "136-174MHz" ON:
-→ Command sent via port 7
-→ PA turns ON
-→ Port 10 auto-sends real values
-→ UI updates with actual VSWR, TEMP, FWD, RFL
-
-User clicks "136-174MHz" OFF:
-→ Command sent via port 7
-→ PA turns OFF
-→ Port 10 auto-sends default values
-→ UI clears to "--"
-
-
-
-
-
-
-
-
-------------------------------
-public class ControlCard {
-    public String id;
-    public String ip;
-    public int port;           // control port (port 7)
-    public int status_port;    // optional: status port (port 10), 0 if unused
-    public String on_command;
-    public String off_command;
-    public String status_command;
-    public List<Module> modules;
-}
-
-card.status_port = parseIntSafe(extract(block, "status_port"));
-
-Update ControlSystemUI to create two handlers for dual-port cards
-Replace the single handler creation block in your allCards loop:
-
-boolean isDualPort = card.status_port > 0;
-
-if (isDualPort) {
-    // Status handler: port 10 — only for receiving hardware data
-    ControlCardSocketHandler statusHandler = new ControlCardSocketHandler(
-        card.ip, card.status_port,
-        hexStringToBytes(card.status_command),
-        isConnected -> {
-            updateCardStatus(cardId, isConnected);
-            List<JToggleButton> btns = toggleMap.get(cardId);
-            if (btns != null) {
-                for (JToggleButton btn : btns) {
-                    SwingUtilities.invokeLater(() -> btn.setEnabled(isConnected));
-                }
-            }
-        },
-        data -> {
-            SwingUtilities.invokeLater(() -> {
-                for (int i = 0; i < card.modules.size(); i++) {
-                    // ... same data update logic as before (vswr, temp, fwd, rfl)
-                }
-            });
-        }
-    );
-    statusHandler.setLans(temp);
-    new Thread(statusHandler).start();
-    statusHandlers.put(cardId, statusHandler);    // port 10
-    cardHandlers.put(cardId, statusHandler);      // used for data display
-
-    // Small delay so status port connects first
-    Thread.sleep(500);
-
-    // Control handler: port 7 — only for sending commands, no status polling
-    ControlCardSocketHandler controlHandler = new ControlCardSocketHandler(
-        card.ip, card.port,
-        null,           // no status_command — don't poll on control port
-        null,           // no status callback needed
-        null            // no data callback needed
-    );
-    new Thread(controlHandler).start();
-    controlPortHandlers.put(cardId, controlHandler);  // port 7
-
-} else {
-    // Single port — existing logic unchanged
-    ControlCardSocketHandler handler = new ControlCardSocketHandler(
-        card.ip, card.port,
-        hexStringToBytes(card.status_command),
-        isConnected -> {
-            updateCardStatus(cardId, isConnected);
-            List<JToggleButton> btns = toggleMap.get(cardId);
-            if (btns != null) {
-                for (JToggleButton btn : btns) {
-                    SwingUtilities.invokeLater(() -> btn.setEnabled(isConnected));
-                    if (isConnected) {
-                        for (Module m : card.modules) {
-                            if (isSpecialBand(m.name)) {
-                                splitCmd(m.power_off, handler);
-                            } else {
-                                handler.enqueueCommand(hexStringToBytes(m.power_off));
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        data -> { /* same data update block */ }
-    );
-    handler.setLans(temp);
-    new Thread(handler).start();
-    cardHandlers.put(cardId, handler);
-}
-
-The toggle command routing is already correct — your existing logic already does this:
-ControlCardSocketHandler handler = controlPortHandlers.containsKey(card.id)
-    ? controlPortHandlers.get(card.id)   // dual-port: send to port 7
-    : cardHandlers.get(card.id);          // single-port: send to same port
-	
-	{
-    "id": "ctrl_01_01",
-    "ip": "192.168.1.13",
-    "port": 7,
-    "status_port": 10,
-    "status_command": "...",
-    ...
 }

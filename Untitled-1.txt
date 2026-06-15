@@ -1,0 +1,269 @@
+This is a very important clue:
+
+Works perfectly on your development PC
+
+Same JAR on another laptop → Control card status blinks green then turns red
+
+That strongly suggests the issue is not your Java code logic. It's something different on that laptop.
+
+First test
+
+Run from Command Prompt on the laptop:
+
+ping 182.168.100.19 -t
+
+and
+
+ping 182.168.100.20 -t
+
+Do they stay stable with 0% packet loss?
+
+Second test - check port connectivity
+
+On the laptop:
+
+telnet 182.168.100.19 6536
+
+or use Hercules/TCP Client.
+
+If Hercules also disconnects on that laptop, the issue is network/firewall related.
+
+Third test - add connection logs
+
+Inside run():
+
+System.out.println("Trying to connect: " + ip + ":" + port);
+
+socket = new Socket();
+socket.connect(new InetSocketAddress(ip, port), 2000);
+
+System.out.println("Connected: " + ip + ":" + port);
+
+Inside catch:
+
+System.out.println("Disconnected: " + ip + ":" + port);
+e.printStackTrace();
+
+Run the JAR from CMD:
+
+java -jar YourApp.jar
+
+instead of double-clicking so you can see the logs.
+
+Fourth test - Windows Firewall
+
+Many times I've seen:
+
+Development PC = Firewall exception exists
+Laptop = Firewall blocks socket traffic
+
+Temporarily disable firewall on the laptop:
+
+Windows Defender Firewall
+→ Turn Windows Defender Firewall off
+
+Test again.
+
+If it becomes stable, create a firewall rule for Java instead of leaving it disabled.
+
+Fifth test - Network profile
+
+On the laptop check:
+
+Settings
+→ Network & Internet
+→ Ethernet/WiFi
+
+If it is:
+
+Public Network
+
+change to:
+
+Private Network
+
+Public networks can be more restrictive.
+
+Sixth test - Antivirus
+
+Some corporate laptops have:
+
+McAfee
+Symantec
+CrowdStrike
+Sophos
+
+which can interrupt socket connections.
+
+Temporarily disable and test.
+
+One thing in your code I'd also change
+
+Currently you reconnect very aggressively.
+
+Replace:
+
+Thread.sleep(2000);
+
+with:
+
+Thread.sleep(5000);
+
+after a disconnect.
+
+This avoids rapid connect/disconnect loops that some embedded devices don't like.
+
+Most likely causes (based on "works on PC, fails on laptop")
+Windows Firewall on laptop.
+Laptop network adapter settings.
+Antivirus/security software.
+Different Java version.
+Laptop cannot maintain TCP connection to port 6536 even though ping works.
+
+Can you tell me:
+
+What Windows version is on the laptop?
+What Java version is installed (java -version)?
+Does Hercules/TCP client stay connected to 182.168.100.19:6536 from that same laptop?
+
+Those answers will narrow it down quickly.
+
+ping is working fine zero packet loss and hercules connected
+
+If:
+
+✅ Ping is stable (0% packet loss)
+✅ Hercules connects successfully to the same IP and port
+✅ Same JAR works on your PC
+❌ JAR on laptop shows control cards blinking green → red
+
+then the problem is likely inside the Java application runtime on that laptop rather than the network.
+
+First thing to check
+
+Run on both machines:
+
+java -version
+
+Compare the versions.
+
+For example:
+
+PC:
+openjdk version "17.0.12"
+
+Laptop:
+openjdk version "1.8.0_202"
+
+A different Java version can behave differently with sockets and Swing timers.
+
+Add detailed logging
+
+In ControlCardSocketHandler.run():
+
+catch (Exception e) {
+
+    System.out.println(
+        "DISCONNECTED -> " + ip + ":" + port
+    );
+
+    e.printStackTrace();
+
+    connected.set(false);
+
+    if (lastStatus && statusCallback != null) {
+        statusCallback.accept(false);
+        lastStatus = false;
+    }
+
+    closeSocket();
+
+    try {
+        Thread.sleep(5000);
+    } catch (InterruptedException ignored) {
+    }
+}
+
+The stack trace is what matters.
+
+You need to see whether it says:
+
+Connection reset
+
+or
+
+Broken pipe
+
+or
+
+Socket closed
+
+or
+
+Connection refused
+
+Each means a different problem.
+
+Another thing I noticed
+
+Your ping checker can force-close sockets:
+
+if (pingFailCount >= 3 &&
+    socket != null &&
+    !socket.isClosed()) {
+
+    closeSocket();
+}
+
+Temporarily comment out the entire socket-closing section:
+
+// if (pingFailCount >= 3 &&
+//     socket != null &&
+//     !socket.isClosed()) {
+//     closeSocket();
+// }
+
+and test the laptop.
+
+Since Hercules already proves the device is reachable, let the TCP connection itself determine whether it's alive.
+
+Also check for multiple instances
+
+I've seen this happen:
+
+User double-clicks jar twice
+
+Result:
+
+Instance 1 -> connected
+Instance 2 -> connected
+Device allows only one client
+Instance 1 disconnected
+
+Add:
+
+System.out.println(
+    "CONNECTED -> " + ip + ":" + port
+);
+
+after successful connect.
+
+You should see only one connection per control card.
+
+My suspicion
+
+Because:
+
+Ping is fine
+Hercules is fine
+PC is fine
+Laptop JAR is unstable
+
+I suspect either:
+
+Different Java version on laptop.
+Your ping checker is closing sockets unexpectedly.
+Multiple application instances.
+An exception is occurring in the sender thread and killing the connection.
+
+The next step is to capture the exact stack trace after a disconnect. That will tell us the real cause immediately.

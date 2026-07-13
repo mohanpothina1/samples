@@ -1,0 +1,244 @@
+// In the ControlSystemUI constructor, when creating ControlCardSocketHandler for each card
+// Add this health status handler integration:
+
+ControlCardSocketHandler handler = new ControlCardSocketHandler(card.ip, card.port,
+        hexStringToBytes(card.status_command), isConnected -> {
+            updateCardStatus(cardId, isConnected);
+            List<JToggleButton> btns = toggleMap.get(card.id);
+            if (btns != null) {
+                for (JToggleButton btn : btns) {
+                    btn.setEnabled(isConnected);
+                    if (isConnected) {
+                        for (Module m : card.modules) {
+                            if (m.name.equalsIgnoreCase(btn.getText())) {
+                                if (m.name.equalsIgnoreCase("2400-2500MHz")
+                                        || m.name.equalsIgnoreCase("136-174MHz")
+                                        || m.name.equalsIgnoreCase("5700-5900MHz")) {
+                                    cardHandlers.get(card.id).enqueueCommand(hexStringToBytes(m.power_off));
+                                } else {
+                                    cardHandlers.get(card.id).enqueueCommand(hexStringToBytes(m.power_off));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }, data -> {
+            SwingUtilities.invokeLater(() -> {
+                for (int i = 0; i < card.modules.size(); i++) {
+
+                    JTextField vswrField = vswrList.get(startIndex + i);
+                    JTextField tempField = tempList.get(startIndex + i);
+
+                    double vswr = data.vswr;
+                    vswrField.setText(String.valueOf(vswr));
+
+                    if (vswr >= 3.5) {
+                        vswrField.setBackground(Color.RED);
+                        vswrField.setForeground(Color.WHITE);
+                        vswrField.setToolTipText("Alert VSWR High..!");
+                    } else if (vswr >= 2.5) {
+                        vswrField.setBackground(Color.YELLOW);
+                        vswrField.setForeground(Color.BLACK);
+                        vswrField.setToolTipText("Warning VSWR");
+                    } else {
+                        vswrField.setBackground(Color.GREEN);
+                        vswrField.setForeground(Color.BLACK);
+                        vswrField.setToolTipText(null);
+                    }
+
+                    int temperature = data.temp;
+                    tempField.setText(String.valueOf(temperature));
+
+                    if (temperature >= 60) {
+                        tempField.setBackground(Color.RED);
+                        tempField.setForeground(Color.WHITE);
+                        tempField.setToolTipText("Alert High Temperature..!");
+                    } else if (temperature >= 45) {
+                        tempField.setBackground(Color.YELLOW);
+                        tempField.setForeground(Color.BLACK);
+                        tempField.setToolTipText("Warning Temperature is above high");
+                    } else {
+                        tempField.setBackground(Color.GREEN);
+                        tempField.setForeground(Color.BLACK);
+                        tempField.setToolTipText(null);
+                    }
+
+                    fwdList.get(startIndex + i).setText(String.valueOf(data.fwd));
+                    rflList.get(startIndex + i).setText(String.valueOf(data.rfl));
+                }
+            });
+        });
+
+Thread t = new Thread(handler);
+t.start();
+handler.setLans(temp);
+cardHandlers.put(card.id, handler);
+
+// *** NEW: Create and start Health Status Handler for this card ***
+// This runs on a different port (20108) for health status
+HealthStatusSocketHandler healthHandler = new HealthStatusSocketHandler(
+    card.ip, 20108, card.id,  // Using port 20108 for health status
+    healthData -> {
+        // Update health status UI
+        SwingUtilities.invokeLater(() -> {
+            updateHealthStatusUI(card.id, healthData);
+            
+            // Optionally log health data
+            String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            String logMsg = String.format("%s Health Status [%s] - PA:%s, VSWR:%s, TEMP:%s, FWD:%.1fW, REF:%.1fW",
+                time, card.id,
+                healthData.paOnOff ? "ON" : "OFF",
+                healthData.vswrAlarm == 0 ? "OK" : "ALERT",
+                healthData.tempAlarm == 0 ? "OK" : "ALERT",
+                healthData.fwdPower,
+                healthData.refPower);
+            addLog(logMsg);
+        });
+    },
+    isConnected -> {
+        // Update health status connection indicator
+        SwingUtilities.invokeLater(() -> {
+            updateHealthConnectionStatus(card.id, isConnected);
+        });
+    }
+);
+
+healthHandler.start();
+healthHandlers.put(card.id, healthHandler);
+
+// *** NEW: Connect to PA Control port 7 for this card ***
+PAControlHandler paControl = new PAControlHandler(card.ip, card.id);
+if (paControl.connect()) {
+    paControlHandlers.put(card.id, paControl);
+    System.out.println("PA Control connected for " + card.id + " on port 7");
+}
+
+// ... continue with rest of the code
+
+
+Now add the supporting methods to ControlSystemUI:
+
+
+
+// Add these methods to ControlSystemUI class
+
+// Method to update health status UI
+private void updateHealthStatusUI(String cardId, HealthStatusData data) {
+    // Find or create health status panel for this card
+    String panelKey = "health_" + cardId;
+    
+    // Update the labels in the health status panel
+    // These labels should be stored in a map when created
+    JLabel paLabel = healthStatusLabels.get(cardId + "_pa");
+    JLabel vswrLabel = healthStatusLabels.get(cardId + "_vswr");
+    JLabel tempLabel = healthStatusLabels.get(cardId + "_temp");
+    JLabel fwdLabel = healthStatusLabels.get(cardId + "_fwd");
+    JLabel refLabel = healthStatusLabels.get(cardId + "_ref");
+    
+    if (paLabel != null) {
+        paLabel.setText(data.paOnOff ? "ON" : "OFF");
+        paLabel.setForeground(data.paOnOff ? new Color(0, 128, 0) : Color.RED);
+        paLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
+    }
+    
+    if (vswrLabel != null) {
+        vswrLabel.setText(data.vswrAlarm == 0 ? "OK" : "ALERT");
+        vswrLabel.setForeground(data.vswrAlarm == 0 ? new Color(0, 128, 0) : Color.RED);
+        vswrLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        if (data.vswrAlarm != 0) {
+            vswrLabel.setToolTipText("VSWR Alarm! Check antenna connection");
+        }
+    }
+    
+    if (tempLabel != null) {
+        tempLabel.setText(data.tempAlarm == 0 ? "OK" : "ALERT");
+        tempLabel.setForeground(data.tempAlarm == 0 ? new Color(0, 128, 0) : Color.RED);
+        tempLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        if (data.tempAlarm != 0) {
+            tempLabel.setToolTipText("Temperature Alarm! Check cooling system");
+        }
+    }
+    
+    if (fwdLabel != null) {
+        fwdLabel.setText(String.format("%.1f W", data.fwdPower));
+        fwdLabel.setForeground(data.fwdPower > 0 ? new Color(0, 128, 0) : Color.GRAY);
+        fwdLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
+    }
+    
+    if (refLabel != null) {
+        refLabel.setText(String.format("%.1f W", data.refPower));
+        refLabel.setForeground(data.refPower < 5 ? new Color(0, 128, 0) : Color.RED);
+        refLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        if (data.refPower >= 5) {
+            refLabel.setToolTipText("High reflected power! Check antenna");
+        }
+    }
+}
+
+// Method to update health connection status
+private void updateHealthConnectionStatus(String cardId, boolean isConnected) {
+    String panelKey = "health_" + cardId;
+    // Could update a connection indicator or just log
+    System.out.println("Health connection for " + cardId + ": " + (isConnected ? "Connected" : "Disconnected"));
+}
+
+// Add this method to create health status panel for each card in the UI
+private JPanel createHealthStatusPanel(String cardId) {
+    JPanel healthPanel = new JPanel();
+    healthPanel.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), 
+        "Health - " + cardId, 
+        TitledBorder.LEFT, TitledBorder.TOP, 
+        new Font("Segoe UI", Font.BOLD, 11), new Color(0, 0, 0)));
+    healthPanel.setLayout(new GridLayout(5, 2, 5, 3));
+    healthPanel.setPreferredSize(new Dimension(180, 120));
+    healthPanel.setBackground(Color.WHITE);
+    
+    // Create labels for health status
+    String[] labelNames = {"PA:", "VSWR:", "TEMP:", "FWD:", "REF:"};
+    JLabel[] valueLabels = new JLabel[5];
+    
+    for (int i = 0; i < labelNames.length; i++) {
+        JLabel nameLabel = new JLabel(labelNames[i]);
+        nameLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+        healthPanel.add(nameLabel);
+        
+        valueLabels[i] = new JLabel("--");
+        valueLabels[i].setFont(new Font("Segoe UI", Font.BOLD, 11));
+        valueLabels[i].setHorizontalAlignment(SwingConstants.RIGHT);
+        healthPanel.add(valueLabels[i]);
+    }
+    
+    // Store the value labels for updates
+    healthStatusLabels.put(cardId + "_pa", valueLabels[0]);
+    healthStatusLabels.put(cardId + "_vswr", valueLabels[1]);
+    healthStatusLabels.put(cardId + "_temp", valueLabels[2]);
+    healthStatusLabels.put(cardId + "_fwd", valueLabels[3]);
+    healthStatusLabels.put(cardId + "_ref", valueLabels[4]);
+    
+    return healthPanel;
+}
+
+// In the east panel creation, add health status panels
+// Find where you create the east panel and add this:
+private void setupHealthStatusPanels(JPanel eastPanel, List<ControlCard> allCards) {
+    JPanel healthContainer = new JPanel();
+    healthContainer.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), 
+        "Health Status", TitledBorder.CENTER, TitledBorder.TOP, 
+        new Font("Segoe UI", Font.BOLD, 14), new Color(0, 128, 0)));
+    healthContainer.setLayout(new GridLayout(0, 1, 5, 5));
+    
+    // Create health status panel for each control card
+    for (ControlCard card : allCards) {
+        JPanel healthPanel = createHealthStatusPanel(card.id);
+        healthContainer.add(healthPanel);
+    }
+    
+    // Add health container to the east panel (at the bottom or in a specific position)
+    eastPanel.add(healthContainer, BorderLayout.SOUTH);
+}
+
+// Call this method when setting up the east panel
+// Add this line after creating the east panel
+setupHealthStatusPanels(eastPanel, getAllControlCards(config));

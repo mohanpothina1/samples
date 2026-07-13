@@ -1,0 +1,373 @@
+public class HardwareData {
+    public boolean paOn;
+    public double vswr;
+    public int temp;
+    public int fwd;
+    public int rfl;
+    public String moduleName; // Optional: track which module
+    
+    public HardwareData() {
+        this.paOn = false;
+        this.vswr = 1.0;
+        this.temp = 0;
+        this.fwd = 0;
+        this.rfl = 0;
+    }
+    
+    @Override
+    public String toString() {
+        return String.format("PA: %s | VSWR: %.2f | TEMP: %d°C | FWD: %dW | RFL: %dW", 
+            paOn ? "ON" : "OFF", vswr, temp, fwd, rfl);
+    }
+}
+
+public class ControlCardSocketHandler implements Runnable {
+    // ... existing fields ...
+    
+    // Add health status command
+    private final byte[] healthStatusCommand; // CO.HL.G command
+    private final Consumer<HealthData> healthCallback; // New callback for health data
+    
+    // Update constructor to include health monitoring
+    public ControlCardSocketHandler(String ip, int port, byte[] statusCommand, 
+                                    Consumer<Boolean> statusCallback, 
+                                    Consumer<HardwareData> dataCallback) {
+        this.ip = ip;
+        this.port = port;
+        this.statusCommand = statusCommand;
+        this.statusCallback = statusCallback;
+        this.dataCallback = dataCallback;
+        this.sendQueue = new ArrayBlockingQueue<>(100);
+        
+        // Default health command (CO.HL.G,1,0,0,50.00,30.00)
+        this.healthStatusCommand = hexStringToBytes("43,4F,2E,48,4C,2E,47,2C,31,2C,30,2C,30,2C,35,30,2E,30,30,2C,33,30,2E,30,30");
+        this.healthCallback = null;
+    }
+    
+    // New constructor with health callback
+    public ControlCardSocketHandler(String ip, int port, byte[] statusCommand, 
+                                    Consumer<Boolean> statusCallback, 
+                                    Consumer<HardwareData> dataCallback,
+                                    byte[] healthCommand,
+                                    Consumer<HealthData> healthCallback) {
+        this.ip = ip;
+        this.port = port;
+        this.statusCommand = statusCommand;
+        this.statusCallback = statusCallback;
+        this.dataCallback = dataCallback;
+        this.healthStatusCommand = healthCommand != null ? healthCommand : 
+            hexStringToBytes("43,4F,2E,48,4C,2E,47,2C,31,2C,30,2C,30,2C,35,30,2E,30,30,2C,33,30,2E,30,30");
+        this.healthCallback = healthCallback;
+        this.sendQueue = new ArrayBlockingQueue<>(100);
+    }
+    
+    // Update auto-polling to include health status
+    private void startAutoPolling() {
+        scheduler = Executors.newSingleThreadScheduledExecutor();
+        
+        // Poll for status command every 300ms (as specified)
+        scheduler.scheduleAtFixedRate(() -> {
+            if (connected.get() && statusCommand != null) {
+                enqueueCommand(statusCommand);
+            }
+        }, 0, 300, TimeUnit.MILLISECONDS); // Changed to 300ms as per requirements
+        
+        // Poll for health status every 1 second
+        scheduler.scheduleAtFixedRate(() -> {
+            if (connected.get() && healthStatusCommand != null) {
+                enqueueCommand(healthStatusCommand);
+            }
+        }, 0, 1, TimeUnit.SECONDS);
+    }
+    
+    // Add method to parse health status response
+    private HealthData parseHealthData(byte[] frame) {
+        HealthData health = new HealthData();
+        
+        try {
+            String response = new String(frame, "ASCII");
+            
+            // Parse response format: CO.HL.G,PAOnOff,VSWR,TEMP,FWD,RFL
+            // Example: CO.HL.G,1,0,0,50.00,30.00
+            if (response.startsWith("CO.HL.G")) {
+                String[] parts = response.split(",");
+                if (parts.length >= 6) {
+                    health.paOn = parts[1].equals("1");
+                    health.vswrAlarm = parts[2].equals("1");
+                    health.tempAlarm = parts[3].equals("1");
+                    health.fwdPower = Double.parseDouble(parts[4]);
+                    health.refPower = Double.parseDouble(parts[5]);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+        return health;
+    }
+    
+    // Update handleFrame to process health responses
+    private void handleFrame(byte[] frame) {
+        // Check if it's health status response
+        String response = new String(frame, StandardCharsets.US_ASCII);
+        if (response.contains("CO.HL.G")) {
+            HealthData health = parseHealthData(frame);
+            // Process health data
+            processHealthData(health);
+            return;
+        }
+        
+        // Original frame processing for hardware data
+        if (!verifyChecksum(frame)) {
+            System.out.println("XOR failed" + bytesToHex(frame));
+            return;
+        }
+
+        HardwareData data = parseFrame(frame);
+        this.lastData = data;
+
+        if (dataCallback != null) {
+            dataCallback.accept(data);
+        }
+
+        System.out.println("VSWR: " + data.vswr + " TEMP: " + data.temp + 
+                         " FWD: " + data.fwd + " RFL: " + data.rfl);
+    }
+    
+    private void processHealthData(HealthData health) {
+        if (healthCallback != null) {
+            healthCallback.accept(health);
+        }
+        System.out.println("Health Status - PA: " + (health.paOn ? "ON" : "OFF") +
+                         " | VSWR Alarm: " + health.vswrAlarm +
+                         " | Temp Alarm: " + health.tempAlarm +
+                         " | FWD: " + health.fwdPower + "W" +
+                         " | RFL: " + health.refPower + "W");
+    }
+    
+    // Helper method to convert hex string to bytes
+    private byte[] hexStringToBytes(String hex) {
+        if (hex == null || hex.trim().isEmpty()) {
+            return new byte[0];
+        }
+
+        String[] parts = hex.trim().split(",");
+        List<Byte> byteList = new ArrayList<>();
+
+        for (String part : parts) {
+            String value = part.trim();
+            if (!value.isEmpty()) {
+                byteList.add((byte) Integer.parseInt(value, 16));
+            }
+        }
+
+        byte[] bytes = new byte[byteList.size()];
+        for (int i = 0; i < byteList.size(); i++) {
+            bytes[i] = byteList.get(i);
+        }
+
+        return bytes;
+    }
+}
+
+public class HealthData {
+    public boolean paOn;
+    public boolean vswrAlarm;
+    public boolean tempAlarm;
+    public double fwdPower;
+    public double refPower;
+    public String timestamp;
+    
+    public HealthData() {
+        this.paOn = false;
+        this.vswrAlarm = false;
+        this.tempAlarm = false;
+        this.fwdPower = 0.0;
+        this.refPower = 0.0;
+        this.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+    
+    public double calculateVSWR() {
+        if (fwdPower > 0 && refPower >= 0) {
+            double gamma = Math.sqrt(refPower / fwdPower);
+            if (gamma < 1.0) {
+                return (1 + gamma) / (1 - gamma);
+            }
+        }
+        return 1.0;
+    }
+    
+    @Override
+    public String toString() {
+        return String.format("PA: %s | VSWR Alarm: %s | Temp Alarm: %s | FWD: %.2fW | RFL: %.2fW",
+            paOn ? "ON" : "OFF", vswrAlarm ? "ACTIVE" : "OK", 
+            tempAlarm ? "ACTIVE" : "OK", fwdPower, refPower);
+    }
+}
+
+// In ControlSystemUI constructor, after creating the east panel status components
+
+// Add Health Status Panel
+JPanel healthPanel = new JPanel();
+healthPanel.setBorder(new TitledBorder(new LineBorder(Color.BLACK), "Health Status", 
+    TitledBorder.CENTER, TitledBorder.TOP, new Font("Segoe UI", Font.BOLD, 16), Color.BLACK));
+eastPanel.add(healthPanel);
+healthPanel.setLayout(new GridLayout(5, 2, 5, 5));
+
+// Health status components
+JLabel paStatusLabel = new JLabel("PA Status:");
+paStatusLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+healthPanel.add(paStatusLabel);
+JLabel paStatusValue = new JLabel("OFF");
+paStatusValue.setFont(new Font("Segoe UI", Font.BOLD, 14));
+paStatusValue.setForeground(Color.RED);
+healthPanel.add(paStatusValue);
+
+JLabel vswrAlarmLabel = new JLabel("VSWR Alarm:");
+vswrAlarmLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+healthPanel.add(vswrAlarmLabel);
+JLabel vswrAlarmValue = new JLabel("OK");
+vswrAlarmValue.setFont(new Font("Segoe UI", Font.BOLD, 14));
+vswrAlarmValue.setForeground(Color.GREEN);
+healthPanel.add(vswrAlarmValue);
+
+JLabel tempAlarmLabel = new JLabel("Temp Alarm:");
+tempAlarmLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+healthPanel.add(tempAlarmLabel);
+JLabel tempAlarmValue = new JLabel("OK");
+tempAlarmValue.setFont(new Font("Segoe UI", Font.BOLD, 14));
+tempAlarmValue.setForeground(Color.GREEN);
+healthPanel.add(tempAlarmValue);
+
+JLabel fwdPowerLabel = new JLabel("FWD Power:");
+fwdPowerLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+healthPanel.add(fwdPowerLabel);
+JLabel fwdPowerValue = new JLabel("0.00 W");
+fwdPowerValue.setFont(new Font("Segoe UI", Font.BOLD, 14));
+healthPanel.add(fwdPowerValue);
+
+JLabel refPowerLabel = new JLabel("RFL Power:");
+refPowerLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+healthPanel.add(refPowerLabel);
+JLabel refPowerValue = new JLabel("0.00 W");
+refPowerValue.setFont(new Font("Segoe UI", Font.BOLD, 14));
+healthPanel.add(refPowerValue);
+
+// Store references for updates
+Map<String, JLabel> healthLabels = new HashMap<>();
+healthLabels.put("paStatus", paStatusValue);
+healthLabels.put("vswrAlarm", vswrAlarmValue);
+healthLabels.put("tempAlarm", tempAlarmValue);
+healthLabels.put("fwdPower", fwdPowerValue);
+healthLabels.put("refPower", refPowerValue);
+
+// In the part where you create ControlCardSocketHandler (around line 400-420)
+
+ControlCardSocketHandler handler = new ControlCardSocketHandler(
+    card.ip, 
+    card.port,
+    hexStringToBytes(card.status_command), 
+    isConnected -> {
+        updateCardStatus(cardId, isConnected);
+        // ... existing code ...
+    }, 
+    data -> {
+        SwingUtilities.invokeLater(() -> {
+            // ... existing UI update code for VSWR, Temp, FWD, RFL ...
+        });
+    },
+    // Add health status command and callback
+    hexStringToBytes("43,4F,2E,48,4C,2E,47,2C,31,2C,30,2C,30,2C,35,30,2E,30,30,2C,33,30,2E,30,30"),
+    health -> {
+        SwingUtilities.invokeLater(() -> {
+            // Update health status UI
+            updateHealthStatus(cardId, health);
+        });
+    }
+);
+
+// Add this method to ControlSystemUI class
+private void updateHealthStatus(String cardId, HealthData health) {
+    // Find the health labels for this card
+    // You might want to store health labels in a map by cardId
+    
+    // Update PA Status
+    paStatusValue.setText(health.paOn ? "ON" : "OFF");
+    paStatusValue.setForeground(health.paOn ? Color.GREEN : Color.RED);
+    
+    // Update VSWR Alarm
+    vswrAlarmValue.setText(health.vswrAlarm ? "ALARM" : "OK");
+    vswrAlarmValue.setForeground(health.vswrAlarm ? Color.RED : Color.GREEN);
+    
+    // Update Temp Alarm
+    tempAlarmValue.setText(health.tempAlarm ? "ALARM" : "OK");
+    tempAlarmValue.setForeground(health.tempAlarm ? Color.RED : Color.GREEN);
+    
+    // Update Power readings
+    fwdPowerValue.setText(String.format("%.2f W", health.fwdPower));
+    refPowerValue.setText(String.format("%.2f W", health.refPower));
+    
+    // Log health status if PA is ON
+    if (health.paOn) {
+        String logMsg = String.format("Health Status [%s]: %s", cardId, health.toString());
+        addLog(logMsg);
+    }
+}
+
+// Update powerOnAll action listener
+powerOnAll.addActionListener(e -> {
+    powerOnAllPAs(config);
+    // Start health monitoring after power on
+    startHealthMonitoring(config);
+});
+
+// Add method to start health monitoring
+private void startHealthMonitoring(Config config) {
+    // Send initial health status command to all connected cards
+    for (ControlCard card : getAllControlCards(config)) {
+        ControlCardSocketHandler handler = cardHandlers.get(card.id);
+        if (handler != null && handler.isConnected()) {
+            // Send health status command
+            handler.enqueueCommand(hexStringToBytes("43,4F,2E,48,4C,2E,47,2C,31,2C,30,2C,30,2C,35,30,2E,30,30,2C,33,30,2E,30,30"));
+        }
+    }
+}
+
+
+public class HealthMonitor {
+    private final ScheduledExecutorService scheduler;
+    private final Map<String, HealthData> healthDataMap;
+    private final Map<String, ControlCardSocketHandler> handlers;
+    
+    public HealthMonitor() {
+        this.scheduler = Executors.newSingleThreadScheduledExecutor();
+        this.healthDataMap = new ConcurrentHashMap<>();
+        this.handlers = new HashMap<>();
+    }
+    
+    public void registerCard(String cardId, ControlCardSocketHandler handler) {
+        handlers.put(cardId, handler);
+        // Start health polling for this card
+        scheduler.scheduleAtFixedRate(() -> {
+            if (handler.isConnected()) {
+                handler.enqueueCommand(hexStringToBytes("43,4F,2E,48,4C,2E,47,2C,31,2C,30,2C,30,2C,35,30,2E,30,30,2C,33,30,2E,30,30"));
+            }
+        }, 0, 1, TimeUnit.SECONDS);
+    }
+    
+    public HealthData getHealthData(String cardId) {
+        return healthDataMap.get(cardId);
+    }
+    
+    public void updateHealthData(String cardId, HealthData data) {
+        healthDataMap.put(cardId, data);
+        // Log any alarms
+        if (data.vswrAlarm || data.tempAlarm) {
+            System.err.println("ALERT: " + cardId + " - " + data);
+        }
+    }
+    
+    public void shutdown() {
+        scheduler.shutdown();
+    }
+}

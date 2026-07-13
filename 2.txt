@@ -1,0 +1,482 @@
+// 1. First, update the HealthStatusData class
+class HealthStatusData {
+    boolean paOnOff;
+    int vswrAlarm;
+    int tempAlarm;
+    double fwdPower;
+    double refPower;
+    String cardId; // To identify which card this data belongs to
+    
+    @Override
+    public String toString() {
+        return String.format("Card: %s, PA:%s, VSWR:%d, TEMP:%d, FWD:%.2f, REF:%.2f", 
+            cardId, paOnOff ? "ON" : "OFF", vswrAlarm, tempAlarm, fwdPower, refPower);
+    }
+}
+
+// 2. Enhanced HealthStatusSocketHandler with proper connection management
+class HealthStatusSocketHandler {
+    private final String ip;
+    private final int port;
+    private final String cardId;
+    private final Consumer<HealthStatusData> dataCallback;
+    private final Consumer<Boolean> connectionCallback;
+    
+    private Socket socket;
+    private OutputStream out;
+    private InputStream in;
+    private volatile boolean running = true;
+    private final AtomicBoolean connected = new AtomicBoolean(false);
+    private Thread receiverThread;
+    private Thread senderThread;
+    private ScheduledExecutorService scheduler;
+    private volatile HealthStatusData lastData;
+    
+    public HealthStatusSocketHandler(String ip, int port, String cardId, 
+                                     Consumer<HealthStatusData> dataCallback,
+                                     Consumer<Boolean> connectionCallback) {
+        this.ip = ip;
+        this.port = port;
+        this.cardId = cardId;
+        this.dataCallback = dataCallback;
+        this.connectionCallback = connectionCallback;
+    }
+    
+    public HealthStatusData getLastData() {
+        return lastData;
+    }
+    
+    public boolean isConnected() {
+        return connected.get();
+    }
+    
+    public void start() {
+        new Thread(this::connectAndRun).start();
+    }
+    
+    public void shutdown() {
+        running = false;
+        closeAll();
+    }
+    
+    private void connectAndRun() {
+        while (running) {
+            try {
+                // Connect to health status port (20108)
+                socket = new Socket();
+                socket.connect(new InetSocketAddress(ip, port), 3000);
+                socket.setSoTimeout(3000);
+                
+                out = socket.getOutputStream();
+                in = socket.getInputStream();
+                
+                connected.set(true);
+                System.out.println("Health Status connected to " + ip + ":" + port + " for card: " + cardId);
+                
+                if (connectionCallback != null) {
+                    connectionCallback.accept(true);
+                }
+                
+                // Start receiver and sender threads
+                startReceiver();
+                startAutoPolling();
+                
+                // Wait for disconnection
+                while (running && socket != null && !socket.isClosed()) {
+                    Thread.sleep(200);
+                }
+                
+            } catch (Exception e) {
+                System.out.println("Health Status connection failed for " + cardId + ": " + e.getMessage());
+                connected.set(false);
+                
+                if (connectionCallback != null) {
+                    connectionCallback.accept(false);
+                }
+                
+                closeAll();
+                
+                try {
+                    Thread.sleep(3000); // Retry after 3 seconds
+                } catch (InterruptedException ignored) {}
+            }
+        }
+    }
+    
+    private void startReceiver() {
+        receiverThread = new Thread(() -> {
+            try {
+                byte[] buffer = new byte[1024];
+                while (running && socket != null && !socket.isClosed() && in != null) {
+                    try {
+                        int length = in.read(buffer);
+                        if (length > 0) {
+                            byte[] data = Arrays.copyOf(buffer, length);
+                            handleHealthData(data);
+                        }
+                    } catch (SocketTimeoutException e) {
+                        // Timeout is expected, continue
+                    } catch (IOException e) {
+                        System.out.println("Health receiver error: " + e.getMessage());
+                        break;
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("Health receiver stopped: " + e.getMessage());
+            }
+        });
+        receiverThread.start();
+    }
+    
+    private void startAutoPolling() {
+        scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(() -> {
+            if (connected.get() && out != null) {
+                try {
+                    // Send health status query
+                    String command = "CO.HL.G\r\n";
+                    out.write(command.getBytes());
+                    out.flush();
+                } catch (Exception e) {
+                    System.out.println("Failed to send health query: " + e.getMessage());
+                }
+            }
+        }, 0, 300, TimeUnit.MILLISECONDS);
+    }
+    
+    private void handleHealthData(byte[] data) {
+        HealthStatusData healthData = parseHealthData(data);
+        if (healthData != null) {
+            healthData.cardId = this.cardId;
+            this.lastData = healthData;
+            
+            if (dataCallback != null) {
+                dataCallback.accept(healthData);
+            }
+        }
+    }
+    
+    private HealthStatusData parseHealthData(byte[] data) {
+        HealthStatusData healthData = new HealthStatusData();
+        String response = new String(data).trim();
+        
+        // Parse response: "CO.HL.G,1,0,0,50.00,30.00"
+        try {
+            if (response.startsWith("CO.HL.G")) {
+                String[] parts = response.split(",");
+                if (parts.length >= 6) {
+                    healthData.paOnOff = Integer.parseInt(parts[1].trim()) == 1;
+                    healthData.vswrAlarm = Integer.parseInt(parts[2].trim());
+                    healthData.tempAlarm = Integer.parseInt(parts[3].trim());
+                    healthData.fwdPower = Double.parseDouble(parts[4].trim());
+                    healthData.refPower = Double.parseDouble(parts[5].trim());
+                    return healthData;
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("Error parsing health data: " + e.getMessage());
+        }
+        return null;
+    }
+    
+    private void closeAll() {
+        connected.set(false);
+        
+        try {
+            if (scheduler != null) {
+                scheduler.shutdownNow();
+            }
+        } catch (Exception e) {}
+        
+        try {
+            if (receiverThread != null && receiverThread.isAlive()) {
+                receiverThread.interrupt();
+            }
+        } catch (Exception e) {}
+        
+        try {
+            if (in != null) in.close();
+        } catch (Exception e) {}
+        
+        try {
+            if (out != null) out.close();
+        } catch (Exception e) {}
+        
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+        } catch (Exception e) {}
+    }
+}
+
+// 3. Update ControlCardSocketHandler to include health status
+// Add these fields to ControlCardSocketHandler
+private HealthStatusSocketHandler healthHandler;
+private JLabel healthStatusLabel;
+private Consumer<HealthStatusData> healthDataCallback;
+
+// Add this method to ControlCardSocketHandler
+public void setHealthHandler(HealthStatusSocketHandler healthHandler) {
+    this.healthHandler = healthHandler;
+}
+
+// Add this method to ControlCardSocketHandler
+public void setHealthDataCallback(Consumer<HealthStatusData> healthDataCallback) {
+    this.healthDataCallback = healthDataCallback;
+}
+
+// 4. Update the ControlSystemUI class
+// Add these fields
+private final Map<String, HealthStatusSocketHandler> healthHandlers = new HashMap<>();
+private final Map<String, JLabel> healthStatusLabels = new HashMap<>();
+
+// Add this method to create health status panel for each card
+private JPanel createHealthStatusPanel(String cardId) {
+    JPanel healthPanel = new JPanel();
+    healthPanel.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), 
+        "Health Status - " + cardId, 
+        TitledBorder.CENTER, TitledBorder.TOP, 
+        new Font("Segoe UI", Font.BOLD, 12), new Color(0, 0, 0)));
+    healthPanel.setLayout(new GridLayout(5, 2, 3, 3));
+    healthPanel.setPreferredSize(new Dimension(200, 120));
+    
+    // Create labels for health status
+    String[] labels = {"PA:", "VSWR:", "Temp:", "FWD:", "REF:"};
+    JLabel[] valueLabels = new JLabel[5];
+    
+    for (int i = 0; i < labels.length; i++) {
+        JLabel label = new JLabel(labels[i]);
+        label.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+        healthPanel.add(label);
+        
+        valueLabels[i] = new JLabel("--");
+        valueLabels[i].setFont(new Font("Segoe UI", Font.BOLD, 11));
+        healthPanel.add(valueLabels[i]);
+    }
+    
+    // Store the value labels for updates
+    healthStatusLabels.put(cardId + "_pa", valueLabels[0]);
+    healthStatusLabels.put(cardId + "_vswr", valueLabels[1]);
+    healthStatusLabels.put(cardId + "_temp", valueLabels[2]);
+    healthStatusLabels.put(cardId + "_fwd", valueLabels[3]);
+    healthStatusLabels.put(cardId + "_ref", valueLabels[4]);
+    
+    return healthPanel;
+}
+
+// Add this method to update health status UI
+private void updateHealthStatusUI(HealthStatusData data) {
+    SwingUtilities.invokeLater(() -> {
+        String prefix = data.cardId + "_";
+        
+        // Update PA status
+        JLabel paLabel = healthStatusLabels.get(prefix + "pa");
+        if (paLabel != null) {
+            paLabel.setText(data.paOnOff ? "ON" : "OFF");
+            paLabel.setForeground(data.paOnOff ? Color.GREEN : Color.RED);
+        }
+        
+        // Update VSWR alarm
+        JLabel vswrLabel = healthStatusLabels.get(prefix + "vswr");
+        if (vswrLabel != null) {
+            vswrLabel.setText(data.vswrAlarm == 0 ? "OK" : "ALERT");
+            vswrLabel.setForeground(data.vswrAlarm == 0 ? Color.GREEN : Color.RED);
+        }
+        
+        // Update Temperature alarm
+        JLabel tempLabel = healthStatusLabels.get(prefix + "temp");
+        if (tempLabel != null) {
+            tempLabel.setText(data.tempAlarm == 0 ? "OK" : "ALERT");
+            tempLabel.setForeground(data.tempAlarm == 0 ? Color.GREEN : Color.RED);
+        }
+        
+        // Update FWD power
+        JLabel fwdLabel = healthStatusLabels.get(prefix + "fwd");
+        if (fwdLabel != null) {
+            fwdLabel.setText(String.format("%.1fW", data.fwdPower));
+            fwdLabel.setForeground(data.fwdPower > 0 ? Color.GREEN : Color.BLACK);
+        }
+        
+        // Update REF power
+        JLabel refLabel = healthStatusLabels.get(prefix + "ref");
+        if (refLabel != null) {
+            refLabel.setText(String.format("%.1fW", data.refPower));
+            refLabel.setForeground(data.refPower < 5 ? Color.GREEN : Color.RED);
+        }
+    });
+}
+
+// Update the east panel creation in ControlSystemUI constructor
+private void setupEastPanel(Config config) {
+    // Existing east panel code...
+    
+    // Add health status panels for each control card
+    JPanel healthContainer = new JPanel();
+    healthContainer.setLayout(new GridLayout(0, 1, 5, 5));
+    healthContainer.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), 
+        "Health Status", TitledBorder.CENTER, TitledBorder.TOP, 
+        new Font("Segoe UI", Font.BOLD, 16), new Color(0, 128, 0)));
+    
+    // For each control card, create a health status panel
+    for (ControlCard card : getAllControlCards(config)) {
+        // Create health status panel
+        JPanel healthPanel = createHealthStatusPanel(card.id);
+        healthContainer.add(healthPanel);
+        
+        // Create health handler for this card
+        HealthStatusSocketHandler healthHandler = new HealthStatusSocketHandler(
+            card.ip, 20108, card.id,
+            this::updateHealthStatusUI,
+            isConnected -> {
+                // Update connection status
+                System.out.println("Health connection for " + card.id + ": " + isConnected);
+            }
+        );
+        healthHandler.start();
+        healthHandlers.put(card.id, healthHandler);
+    }
+    
+    // Add health container to east panel
+    eastPanel.add(healthContainer);
+}
+
+// Helper method to get all control cards
+private List<ControlCard> getAllControlCards(Config config) {
+    List<ControlCard> allCards = new ArrayList<>();
+    for (PowerSupply psu : config.power_supplies) {
+        allCards.addAll(psu.control_cards);
+    }
+    allCards.addAll(config.standalone_control_cards);
+    return allCards;
+}
+
+// Update the east panel initialization in the constructor
+// Replace the east panel creation code with this
+JPanel eastPanel = new JPanel();
+eastPanel.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), "Status Query", 
+    TitledBorder.CENTER, TitledBorder.TOP, 
+    new Font("Segoe UI", Font.BOLD, 20), new Color(0, 0, 0)));
+eastPanel.setPreferredSize(new Dimension(600, 0));
+getContentPane().add(eastPanel, BorderLayout.EAST);
+eastPanel.setLayout(new BorderLayout());
+
+// Create main status panel (existing one)
+JPanel mainStatusPanel = new JPanel();
+mainStatusPanel.setLayout(new GridLayout(0, 3, 0, 0));
+
+// Add your existing status panels to mainStatusPanel
+// ... (your existing code for freqband_panel, system_status_panel, powermeter_panel)
+
+eastPanel.add(mainStatusPanel, BorderLayout.CENTER);
+
+// Add health status container at the bottom
+setupEastPanelHealth(eastPanel, config);
+
+// Method to add health status to east panel
+private void setupEastPanelHealth(JPanel eastPanel, Config config) {
+    JPanel healthContainer = new JPanel();
+    healthContainer.setLayout(new GridLayout(0, 1, 5, 5));
+    healthContainer.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), 
+        "Health Status", TitledBorder.CENTER, TitledBorder.TOP, 
+        new Font("Segoe UI", Font.BOLD, 14), new Color(0, 128, 0)));
+    healthContainer.setPreferredSize(new Dimension(600, 200));
+    
+    // For each control card, create a health status panel
+    for (ControlCard card : getAllControlCards(config)) {
+        // Create health status panel
+        JPanel healthPanel = createHealthStatusPanel(card.id);
+        healthContainer.add(healthPanel);
+        
+        // Create health handler for this card
+        HealthStatusSocketHandler healthHandler = new HealthStatusSocketHandler(
+            card.ip, 20108, card.id,
+            this::updateHealthStatusUI,
+            isConnected -> {
+                System.out.println("Health connection for " + card.id + ": " + isConnected);
+            }
+        );
+        healthHandler.start();
+        healthHandlers.put(card.id, healthHandler);
+    }
+    
+    eastPanel.add(healthContainer, BorderLayout.SOUTH);
+}
+
+// 5. Update the shutdown/dispose method
+@Override
+public void dispose() {
+    for (ControlCardSocketHandler handler : cardHandlers.values()) {
+        handler.shutdown();
+    }
+    for (PowerSupplySocketHandler handler : psuHandlers.values()) {
+        handler.shutdown();
+    }
+    for (HealthStatusSocketHandler handler : healthHandlers.values()) {
+        handler.shutdown();
+    }
+    super.dispose();
+}
+
+// 6. Add ability to send PA control commands through port 7
+public class PAControlHandler {
+    private Socket paSocket;
+    private OutputStream out;
+    private final String ip;
+    private final String cardId;
+    
+    public PAControlHandler(String ip, String cardId) {
+        this.ip = ip;
+        this.cardId = cardId;
+    }
+    
+    public boolean connect() {
+        try {
+            paSocket = new Socket();
+            paSocket.connect(new InetSocketAddress(ip, 7), 3000);
+            out = paSocket.getOutputStream();
+            System.out.println("Connected to PA Control port 7 for " + cardId);
+            return true;
+        } catch (Exception e) {
+            System.out.println("Failed to connect to PA Control: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    public void sendCommand(String command) {
+        try {
+            if (out != null && paSocket != null && !paSocket.isClosed()) {
+                out.write(command.getBytes());
+                out.flush();
+                System.out.println("Sent PA command: " + command);
+            }
+        } catch (Exception e) {
+            System.out.println("Failed to send PA command: " + e.getMessage());
+        }
+    }
+    
+    public void disconnect() {
+        try {
+            if (out != null) out.close();
+            if (paSocket != null) paSocket.close();
+        } catch (Exception e) {}
+    }
+}
+
+// 7. Add PA Control to the UI
+private Map<String, PAControlHandler> paControlHandlers = new HashMap<>();
+
+// In the constructor, initialize PA Control for each card
+private void initializePAControl(Config config) {
+    for (ControlCard card : getAllControlCards(config)) {
+        PAControlHandler paHandler = new PAControlHandler(card.ip, card.id);
+        if (paHandler.connect()) {
+            paControlHandlers.put(card.id, paHandler);
+        }
+    }
+}
+
+// Call this after all connections are established
+// Add this to the ControlSystemUI constructor after the card handlers are created
+initializePAControl(config);
+

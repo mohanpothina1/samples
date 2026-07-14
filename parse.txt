@@ -185,3 +185,81 @@ data.rflWatts = (rflRaw / ADC_MAX) * MAX_RFL_POWER;
 System.out.println("Raw FWD: " + fwdRaw + " (0x" + Integer.toHexString(fwdRaw) + ")");
 System.out.println("Raw RFL: " + rflRaw + " (0x" + Integer.toHexString(rflRaw) + ")");
 System.out.println("Temperature: " + data.temp + "°C");
+
+
+
+
+
+
+private HardwareData parseFrame(byte[] frame) {
+
+    HardwareData data = new HardwareData();
+
+    if (frame == null || frame.length < 35) {
+        System.out.println("Packet too short.");
+        return data;
+    }
+
+    // Payload starts after:
+    // SOF(1) + Func(1) + Addr(1) + Cmd(1) + Ack(1) + Length(1)
+    int index = 6;
+
+    // Heartbeat
+    int heartbeat = frame[index++] & 0xFF;
+
+    // Status
+    int status = frame[index++] & 0xFF;
+
+    // Fault Status
+    int fault = frame[index++] & 0xFF;
+
+    // Voltage (2 bytes)
+    int voltage = ((frame[index++] & 0xFF) << 8)
+                | (frame[index++] & 0xFF);
+
+    // Current (2 bytes)
+    int current = ((frame[index++] & 0xFF) << 8)
+                | (frame[index++] & 0xFF);
+
+    // Temperature (1 byte)
+    data.temp = frame[index++] & 0xFF;
+
+    // Forward Power (2 bytes)
+    data.fwd = ((frame[index++] & 0xFF) << 8)
+             | (frame[index++] & 0xFF);
+
+    // Reverse Voltage (2 bytes)
+    int reverseVoltage = ((frame[index++] & 0xFF) << 8)
+                       | (frame[index++] & 0xFF);
+
+    // ALC (2 bytes)
+    int alc = ((frame[index++] & 0xFF) << 8)
+            | (frame[index++] & 0xFF);
+
+    // Forward Sampling Voltage (2 bytes)
+    int forwardSample = ((frame[index++] & 0xFF) << 8)
+                      | (frame[index++] & 0xFF);
+
+    // Reverse Sampling Voltage (2 bytes)
+    int reverseSample = ((frame[index++] & 0xFF) << 8)
+                      | (frame[index++] & 0xFF);
+
+    // Store values
+    data.rfl = reverseVoltage;   // This is Reverse Voltage, NOT reflected RF power
+    data.paOn = data.fwd > 0;
+
+    // Debug
+    System.out.println("Heartbeat      : " + heartbeat);
+    System.out.println("Status         : " + status);
+    System.out.println("Fault          : " + fault);
+    System.out.println("Voltage        : " + voltage);
+    System.out.println("Current        : " + current);
+    System.out.println("Temperature    : " + data.temp + " °C");
+    System.out.println("Forward Power  : " + data.fwd);
+    System.out.println("Reverse Voltage: " + reverseVoltage);
+    System.out.println("ALC            : " + alc);
+    System.out.println("Forward Sample : " + forwardSample);
+    System.out.println("Reverse Sample : " + reverseSample);
+
+    return data;
+}

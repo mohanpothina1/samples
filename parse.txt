@@ -1,0 +1,187 @@
+private HardwareData parseFrame(byte[] frame) {
+
+    HardwareData data = new HardwareData();
+
+    if (frame.length < 14) {
+        System.out.println("Packet too short for parsing.");
+        return data;
+    }
+
+    int payLoad = 6;  // Start after header (7E 16 04 13 00 1B)
+
+    // Skip Status (offset 1) and Fault Status (offset 2)
+    payLoad++;  // Status = frame[6]
+    payLoad++;  // Fault Status = frame[7]
+
+    // Skip Voltage (offset 3-4)
+    payLoad += 2;  // Voltage = frame[8-9]
+
+    // Skip Current (offset 5-6)
+    payLoad += 2;  // Current = frame[10-11]
+
+    // === TEMPERATURE (offset 7) ===
+    data.temp = frame[payLoad++] & 0xFF;  // 37°C
+
+    // === FORWARD POWER (offset 8-9) ===
+    int fwdRaw = ((frame[payLoad++] & 0xFF) << 8) | (frame[payLoad++] & 0xFF);
+    
+    // === REFLECTED POWER (offset 10-11) ===
+    int rflRaw = ((frame[payLoad++] & 0xFF) << 8) | (frame[payLoad++] & 0xFF);
+
+    // Store raw values
+    data.fwd = fwdRaw;
+    data.rfl = rflRaw;
+
+    // === CONVERT TO WATTS ===
+    // Assuming raw values are in 0.1 dBm steps (typical for these modules)
+    // Formula: Power (W) = 10^((dBm - 30) / 10)
+    // If raw is in 0.1 dBm: dBm = raw / 10
+    
+    double fwd_dBm = fwdRaw / 10.0;  // Convert from 0.1 dBm to dBm
+    double rfl_dBm = rflRaw / 10.0;
+    
+    data.fwdWatts = Math.pow(10, (fwd_dBm - 30) / 10);  // dBm to Watts
+    data.rflWatts = Math.pow(10, (rfl_dBm - 30) / 10);
+    
+    // Handle special cases (0 dBm = 0.001W = 1mW)
+    if (fwdRaw == 0) {
+        data.fwdWatts = 0.0;
+    }
+    if (rflRaw == 0) {
+        data.rflWatts = 0.0;
+    }
+
+    // === CALCULATE VSWR ===
+    if (fwdRaw > 0 && data.fwdWatts > 0) {
+        // Calculate VSWR from power ratio
+        double powerRatio = data.rflWatts / data.fwdWatts;
+        
+        // Clamp to valid range
+        if (powerRatio < 1.0) {
+            double gamma = Math.sqrt(powerRatio);
+            data.vswr = (1 + gamma) / (1 - gamma);
+            
+            // Clamp VSWR to reasonable range
+            if (data.vswr > 99.9) {
+                data.vswr = 99.9;
+            } else if (data.vswr < 1.0) {
+                data.vswr = 1.0;
+            }
+        } else {
+            data.vswr = 99.9;  // Infinite VSWR
+        }
+    } else {
+        data.vswr = 1.0;  // No forward power = no reflection
+    }
+
+    data.paOn = (fwdRaw > 0);
+
+    return data;
+}
+
+
+public class HardwareData {
+    public int temp;          // Temperature in °C
+    public int fwd;           // Raw Forward Power (0.1 dBm units)
+    public int rfl;           // Raw Reflected Power (0.1 dBm units)
+    public double fwdWatts;   // Forward Power in Watts
+    public double rflWatts;   // Reflected Power in Watts
+    public double vswr;       // VSWR (Voltage Standing Wave Ratio)
+    public boolean paOn;      // PA status
+    
+    // Getters and setters...
+}
+
+With your frame: 00 00 (fwd) and 00 05 (rfl):
+
+Parameter	Raw Value	Converted
+Temperature	0x25 = 37	37°C
+Forward Power	0x0000 = 0	0 W
+Reflected Power	0x0005 = 5 (0.5 dBm)	0.00112 W (1.12 mW)
+VSWR	-	99.9 (infinite, no forward power)
+
+private HardwareData parseFrame(byte[] frame) {
+
+    HardwareData data = new HardwareData();
+
+    if (frame.length < 14) {
+        System.out.println("Packet too short for parsing.");
+        return data;
+    }
+
+    int payLoad = 6;
+
+    // Skip Status and Fault Status
+    payLoad++;
+    payLoad++;
+
+    // Skip Voltage (2 bytes)
+    payLoad += 2;
+    
+    // Skip Current (2 bytes)
+    payLoad += 2;
+
+    // === TEMPERATURE ===
+    data.temp = frame[payLoad++] & 0xFF;
+
+    // === FORWARD POWER (2 bytes) ===
+    int fwdRaw = ((frame[payLoad++] & 0xFF) << 8) | (frame[payLoad++] & 0xFF);
+    
+    // === REFLECTED POWER (2 bytes) ===
+    int rflRaw = ((frame[payLoad++] & 0xFF) << 8) | (frame[payLoad++] & 0xFF);
+
+    // Store raw values
+    data.fwd = fwdRaw;
+    data.rfl = rflRaw;
+
+    // === CONVERT RAW TO WATTS ===
+    // If raw is in mW (milliwatts)
+    data.fwdWatts = fwdRaw / 1000.0;  // mW to Watts
+    data.rflWatts = rflRaw / 1000.0;  // mW to Watts
+    
+    // OR if raw is directly in Watts (unlikely but possible)
+    // data.fwdWatts = fwdRaw;
+    // data.rflWatts = rflRaw;
+
+    // === CALCULATE VSWR ===
+    if (data.fwdWatts > 0) {
+        // Calculate reflection coefficient from power ratio
+        double powerRatio = data.rflWatts / data.fwdWatts;
+        
+        // Clamp to valid range (can't exceed 1)
+        if (powerRatio > 1.0) {
+            powerRatio = 1.0;
+        }
+        
+        double gamma = Math.sqrt(powerRatio);
+        data.vswr = (1 + gamma) / (1 - gamma);
+        
+        // Clamp VSWR
+        if (data.vswr > 99.9) {
+            data.vswr = 99.9;
+        } else if (data.vswr < 1.0) {
+            data.vswr = 1.0;
+        }
+    } else {
+        data.vswr = 99.9;  // No forward power
+    }
+
+    data.paOn = (fwdRaw > 0);
+
+    return data;
+}
+
+// If raw is ADC count (e.g., 0-4095 for 12-bit ADC)
+// You need to know the calibration: Power(W) = (ADC_Value / ADC_Max) * Max_Power
+
+double ADC_MAX = 4095.0;  // For 12-bit ADC
+double MAX_FWD_POWER = 100.0;  // Example: 100W max forward power
+double MAX_RFL_POWER = 50.0;   // Example: 50W max reflected power
+
+data.fwdWatts = (fwdRaw / ADC_MAX) * MAX_FWD_POWER;
+data.rflWatts = (rflRaw / ADC_MAX) * MAX_RFL_POWER;
+
+// Add this before conversion
+System.out.println("Raw FWD: " + fwdRaw + " (0x" + Integer.toHexString(fwdRaw) + ")");
+System.out.println("Raw RFL: " + rflRaw + " (0x" + Integer.toHexString(rflRaw) + ")");
+System.out.println("Temperature: " + data.temp + "°C");

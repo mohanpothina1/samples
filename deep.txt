@@ -1,0 +1,1763 @@
+// Add these imports at the top
+import java.util.concurrent.ConcurrentHashMap;
+
+public class ControlSystemUI extends JFrame {
+    // Add this map to track dual port connections
+    private final Map<String, DualPortHandler> dualPortHandlers = new ConcurrentHashMap<>();
+    // ... existing code ...
+
+    // Modify the ControlCard creation section in the constructor
+
+    // Find this section where ControlCardSocketHandler is created and replace with:
+    for (ControlCard card : allCards) {
+        final String cardId = card.id;
+        int startIndex = vswrList.size();
+        
+        // Check if this card needs dual port connection
+        boolean needsDualPort = false;
+        for (Module m : card.modules) {
+            if (m.name.equalsIgnoreCase("2400-2500MHz") || 
+                m.name.equalsIgnoreCase("136-174MHz") || 
+                m.name.equalsIgnoreCase("5700-5900MHz")) {
+                needsDualPort = true;
+                break;
+            }
+        }
+
+        // ... existing UI code for labels, toggles, etc. ...
+
+        if (needsDualPort) {
+            // Create dual port handler instead of regular one
+            DualPortHandler handler = new DualPortHandler(
+                card.ip, 
+                card.port, 
+                hexStringToBytes(card.status_command),
+                isConnected -> updateCardStatus(cardId, isConnected),
+                data -> {
+                    SwingUtilities.invokeLater(() -> {
+                        for (int i = 0; i < card.modules.size(); i++) {
+                            // Update UI with real data
+                            JTextField vswrField = vswrList.get(startIndex + i);
+                            JTextField tempField = tempList.get(startIndex + i);
+                            
+                            double vswr = data.vswr;
+                            vswrField.setText(String.valueOf(vswr));
+                            
+                            if (vswr >= 3.5) {
+                                vswrField.setBackground(Color.RED);
+                                vswrField.setForeground(Color.WHITE);
+                                vswrField.setToolTipText("Alert VSWR High..!");
+                            } else if (vswr >= 2.5) {
+                                vswrField.setBackground(Color.YELLOW);
+                                vswrField.setForeground(Color.BLACK);
+                                vswrField.setToolTipText("Warning VSWR");
+                            } else {
+                                vswrField.setBackground(Color.GREEN);
+                                vswrField.setForeground(Color.BLACK);
+                                vswrField.setToolTipText(null);
+                            }
+                            
+                            int temperature = data.temp;
+                            tempField.setText(String.valueOf(temperature));
+                            
+                            if (temperature >= 60) {
+                                tempField.setBackground(Color.RED);
+                                tempField.setForeground(Color.WHITE);
+                                tempField.setToolTipText("Alert High Temperature..!");
+                            } else if (temperature >= 45) {
+                                tempField.setBackground(Color.YELLOW);
+                                tempField.setForeground(Color.BLACK);
+                                tempField.setToolTipText("Warning Temperature is above high");
+                            } else {
+                                tempField.setBackground(Color.GREEN);
+                                tempField.setForeground(Color.BLACK);
+                                tempField.setToolTipText(null);
+                            }
+                            
+                            fwdList.get(startIndex + i).setText(String.valueOf(data.fwd));
+                            rflList.get(startIndex + i).setText(String.valueOf(data.rfl));
+                        }
+                    });
+                }
+            );
+            handler.start();
+            dualPortHandlers.put(card.id, handler);
+            cardHandlers.put(card.id, handler); // Keep reference in cardHandlers for compatibility
+        } else {
+            // Regular handler for other bands
+            ControlCardSocketHandler handler = new ControlCardSocketHandler(
+                card.ip, 
+                card.port, 
+                hexStringToBytes(card.status_command), 
+                isConnected -> updateCardStatus(cardId, isConnected),
+                data -> {
+                    // ... existing data update code ...
+                }
+            );
+            Thread t = new Thread(handler);
+            t.start();
+            cardHandlers.put(card.id, handler);
+        }
+        // ... rest of existing code ...
+    }
+}
+
+// Add this new class for dual port handling
+class DualPortHandler implements Runnable {
+    private final String ip;
+    private final int controlPort; // port 7 for control
+    private static final int STATUS_PORT = 20108; // port for status
+    private final byte[] statusCommand;
+    private final Consumer<Boolean> statusCallback;
+    private final Consumer<HardwareData> dataCallback;
+    private volatile boolean running = true;
+    private volatile boolean connected = false;
+    private Socket controlSocket;
+    private Socket statusSocket;
+    private OutputStream controlOut;
+    private OutputStream statusOut;
+    private final ArrayBlockingQueue<byte[]> sendQueue = new ArrayBlockingQueue<>(100);
+    private volatile HardwareData lastData;
+    private Thread senderThread;
+    private ScheduledExecutorService scheduler;
+    private boolean statusEnabled = false;
+
+    public DualPortHandler(String ip, int port, byte[] statusCommand, 
+                          Consumer<Boolean> statusCallback, 
+                          Consumer<HardwareData> dataCallback) {
+        this.ip = ip;
+        this.controlPort = port;
+        this.statusCommand = statusCommand;
+        this.statusCallback = statusCallback;
+        this.dataCallback = dataCallback;
+    }
+
+    @Override
+    public void run() {
+        while (running) {
+            try {
+                // Step 1: Connect to status port 20108
+                statusSocket = new Socket();
+                statusSocket.connect(new InetSocketAddress(ip, STATUS_PORT), 3000);
+                statusOut = statusSocket.getOutputStream();
+                
+                // Step 2: Send command to enable PA status
+                byte[] enableStatusCmd = "CO.PA.S,1".getBytes(); // Enable PA status
+                statusOut.write(enableStatusCmd);
+                statusOut.flush();
+                Thread.sleep(500); // Wait for response
+                
+                // Step 3: Get default values
+                statusOut.write(statusCommand);
+                statusOut.flush();
+                
+                // Start status receiver thread
+                Thread statusReceiver = new Thread(() -> {
+                    try {
+                        InputStream in = statusSocket.getInputStream();
+                        while (running && !statusSocket.isClosed()) {
+                            byte[] frame = readFrame(in);
+                            if (frame != null && verifyXor(frame)) {
+                                HardwareData data = parseFrame(frame);
+                                this.lastData = data;
+                                if (dataCallback != null) {
+                                    dataCallback.accept(data);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        System.out.println("Status receiver stopped");
+                    }
+                });
+                statusReceiver.start();
+                
+                // Step 4: Connect to control port (7)
+                controlSocket = new Socket();
+                controlSocket.connect(new InetSocketAddress(ip, controlPort), 3000);
+                controlOut = controlSocket.getOutputStream();
+                
+                connected = true;
+                if (statusCallback != null) {
+                    statusCallback.accept(true);
+                }
+                
+                // Start sender for control commands
+                startSender();
+                
+                // Start auto polling for status
+                startAutoPolling();
+                
+                // Wait for disconnection
+                while (running && controlSocket != null && !controlSocket.isClosed()) {
+                    Thread.sleep(200);
+                }
+                
+            } catch (Exception e) {
+                System.out.println("Dual port connection failed for: " + ip);
+                connected = false;
+                if (statusCallback != null) {
+                    statusCallback.accept(false);
+                }
+                closeSockets();
+                try {
+                    Thread.sleep(3000);
+                } catch (InterruptedException ignored) {}
+            }
+        }
+    }
+
+    private void startSender() {
+        senderThread = new Thread(() -> {
+            try {
+                while (running && controlSocket != null && !controlSocket.isClosed()) {
+                    byte[] cmd = sendQueue.take();
+                    if (controlOut != null) {
+                        controlOut.write(cmd);
+                        controlOut.flush();
+                        System.out.println("Sent to control port: " + bytesToHex(cmd));
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("Sender stopped.");
+            }
+        });
+        senderThread.start();
+    }
+
+    private void startAutoPolling() {
+        if (statusCommand == null) return;
+        scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(() -> {
+            if (connected && statusOut != null) {
+                try {
+                    statusOut.write(statusCommand);
+                    statusOut.flush();
+                } catch (IOException e) {
+                    System.out.println("Status polling failed");
+                }
+            }
+        }, 0, 1, TimeUnit.SECONDS);
+    }
+
+    private byte[] readFrame(InputStream in) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        int b;
+        
+        // Wait for frame start (0x5A)
+        while ((b = in.read()) != -1) {
+            if (b == 0x5A) {
+                buffer.write(b);
+                break;
+            }
+        }
+        if (b == -1) return null;
+        
+        // Read until frame end (0xA5)
+        while ((b = in.read()) != -1) {
+            buffer.write(b);
+            if (b == 0xA5) {
+                break;
+            }
+        }
+        return buffer.toByteArray();
+    }
+
+    private boolean verifyXor(byte[] frame) {
+        if (frame.length < 3) return false;
+        int xor = 0;
+        for (int i = 0; i < frame.length - 2; i++) {
+            xor ^= frame[i];
+        }
+        return xor == (frame[frame.length - 2] & 0xFF);
+    }
+
+    private HardwareData parseFrame(byte[] frame) {
+        HardwareData data = new HardwareData();
+        data.paOn = false;
+        int i = 0;
+        
+        while (i < frame.length) {
+            int id = frame[i] & 0xFF;
+            
+            if (id == 0xF1) {
+                data.fwd = frame[i + 2] & 0xFF;
+                if (data.fwd > 0) data.paOn = true;
+                i += 3;
+            } else if (id == 0xF2) {
+                data.rfl = frame[i + 2] & 0xFF;
+                i += 3;
+            } else if (id == 0x20) {
+                data.temp = ((frame[i + 2] & 0xFF) << 8) | (frame[i + 3] & 0xFF);
+                i += 4;
+            } else if (id == 0x21) {
+                int raw = ((frame[i + 2] & 0xFF) << 8) | (frame[i + 3] & 0xFF);
+                data.vswr = raw / 10.0;
+                i += 4;
+            } else {
+                i++;
+            }
+        }
+        return data;
+    }
+
+    public void enqueueCommand(byte[] command) {
+        if (command != null && connected) {
+            sendQueue.offer(command);
+        }
+    }
+
+    public boolean isConnected() {
+        return connected;
+    }
+
+    public HardwareData getLastData() {
+        return lastData;
+    }
+
+    public void start() {
+        new Thread(this).start();
+    }
+
+    public void shutdown() {
+        running = false;
+        closeSockets();
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+        }
+    }
+
+    private void closeSockets() {
+        connected = false;
+        try {
+            if (controlSocket != null) controlSocket.close();
+        } catch (Exception ignored) {}
+        try {
+            if (statusSocket != null) statusSocket.close();
+        } catch (Exception ignored) {}
+    }
+
+    private String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02X ", b));
+        }
+        return sb.toString();
+    }
+}
+
+{
+	"power_supplies": [
+		{
+			"id": "psu_01",
+			"ip": "192.168.1.102",
+			"port": 7,
+			"control_cards": [
+				{
+					"id": "ctrl_01_01",
+					"ip": "172.232.50.24",
+					"port": 7,
+					"dual_port": true,
+					"status_enable_command": "43,4F,2E,50,41,2E,53,2C,31",
+					"status_port": 20108,
+					"on_command": "06,02,0d,0a,03,02,0d,0a",
+					"off_command": "06,00,0d,0a,03,00,0d,0a",
+					"status_command": "5a,03,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,58,a5",
+					"modules": [
+						{
+							"name": "136-174MHz",
+							"power_on": "43,4f,2e,41,54,2e,53,2c,30,0d,0a,43,4f,2e,50,53,2e,53,2c,31,0d,0a",
+							"power_off": "43,4f,2e,41,54,2e,53,2c,33,30,0d,0a,43,4f,2e,50,53,2e,53,2c,30,0d,0a"
+						}
+					]
+				},
+				{
+					"id": "ctrl_01_02",
+					"ip": "192.168.1.40",
+					"port": 7,
+					"dual_port": false,
+					"on_command": "07,02,0d,0a,01,02,0d,0a",
+					"off_command": "07,00,0d,0a,01,00,0d,0a",
+					"status_command": "5a,01,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5a,a5",
+					"modules": [
+						{
+							"name": "430-470MHz",
+							"power_on": "43,4f,2e,50,53,2e,53,2c,31,0d,0a",
+							"power_off": "43,4f,2e,50,53,2e,53,2c,30,0d,0a"
+						}
+					]
+				},
+				{
+					"id": "ctrl_01_03",
+					"ip": "192.168.1.57",
+					"port": 7,
+					"dual_port": false,
+					"on_command": "08,02,0d,0a,02,02,0d,0a,04,02,0d,0a",
+					"off_command": "08,00,0d,0a,02,00,0d,0a,04,00,0d,0a",
+					"status_command": "5a,02,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,59,a5",
+					"modules": [
+						{
+							"name": "100-500MHz",
+							"power_on": "43,4f,2e,50,53,2e,53,2c,31,0d,0a",
+							"power_off": "43,4f,2e,50,53,2e,53,2c,30,0d,0a"
+						}
+					]
+				},
+				{
+					"id": "ctrl_01_04",
+					"ip": "192.168.1.211",
+					"port": 7,
+					"dual_port": false,
+					"on_command": "08,02,0d,0a,02,02,0d,0a,04,02,0d,0a",
+					"off_command": "08,00,0d,0a,02,00,0d,0a,04,00,0d,0a",
+					"status_command": "5a,04,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5f,a5",
+					"modules": [
+						{
+							"name": "2100-2180MHz",
+							"power_on": "43,4f,2e,50,53,2e,53,2c,31,0d,0a",
+							"power_off": "43,4f,2e,50,53,2e,53,2c,30,0d,0a"
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "psu_02",
+			"ip": "192.168.1.101",
+			"port": 10008,
+			"control_cards": [
+				{
+					"id": "ctrl_02_01",
+					"ip": "192.168.1.15",
+					"port": 7,
+					"dual_port": true,
+					"status_enable_command": "43,4F,2E,50,41,2E,53,2C,31",
+					"status_port": 20108,
+					"on_command": "43,4F,2E,50,53,2E,53,2C,37,2C,31",
+					"off_command": "43,4F,2E,50,53,2E,53,2C,37,2C,30",
+					"status_command": "5a,02,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,59,a5",
+					"modules": [
+						{
+							"name": "2400-2500MHz",
+							"power_on": "01,00,0d,0a,01,00,0d,0a",
+							"power_off": "01,02,0d,0a,01,02,0d,0a"
+						}
+					]
+				},
+				{
+					"id": "ctrl_02_02",
+					"ip": "172.232.50.24",
+					"port": 10101,
+					"dual_port": true,
+					"status_enable_command": "43,4F,2E,50,41,2E,53,2C,31",
+					"status_port": 20108,
+					"on_command": "43,4F,2E,50,53,2E,53,2C,37,2C,31,0d,0a",
+					"off_command": "43,4F,2E,50,53,2E,53,2C,37,2C,30,0d,0a",
+					"status_command": "5a,03,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,58,a5",
+					"modules": [
+						{
+							"name": "5700-5900MHz",
+							"power_on": "24,50,41,30,31,2c,53,54,41,3d,49,2c,2a,30,31,31,73,0d,0a",
+							"power_off": "24,50,41,30,31,2c,53,54,41,3d,4f,2c,2a,30,31,31,73,0d,0a"
+						}
+					]
+				},
+				{
+					"id": "ctrl_02_03",
+					"ip": "192.168.1.21",
+					"port": 7,
+					"dual_port": false,
+					"on_command": "43,4F,2E,50,53,2E,53,2C,37,2C,31,0d,0a",
+					"off_command": "43,4F,2E,50,53,2E,53,2C,37,2C,30,0d,0a",
+					"status_command": "5a,05,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5e,a5",
+					"modules": [
+						{
+							"name": "2635-2655MHz",
+							"power_on": "43,4f,2e,41,54,2e,53,2c,35,0d,0a,43,4f,2e,50,53,2e,53,2c,31,0d,0a",
+							"power_off": "43,4f,2e,41,54,2e,53,2c,33,30,0d,0a,43,4f,2e,50,53,2e,53,2c,30,0d,0a"
+						}
+					]
+				}
+			]
+		}
+	],
+	"standalone_control_cards": [
+		{
+			"id": "ctrl_s_01",
+			"ip": "192.168.127.254",
+			"port": 10125,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,03,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,58,a5",
+			"modules": [
+				{
+					"name": "1800-1880MHz",
+					"power_on": "5a,03,03,90,01,01,ca,a5",
+					"power_off": "5a,03,03,90,01,00,cb,a5"
+				}
+			]
+		},
+		{
+			"id": "ctrl_s_03",
+			"ip": "192.168.127.254",
+			"port": 10127,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,05,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5e,a5",
+			"modules": [
+				{
+					"name": "2300-2400MHz",
+					"power_on": "5a,05,03,90,01,01,cc,a5",
+					"power_off": "5a,05,03,90,01,00,cd,a5"
+				}
+			]
+		},
+		{
+			"id": "ctrl_s_04",
+			"ip": "192.168.127.254",
+			"port": 10123,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,01,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5a,a5",
+			"modules": [
+				{
+					"name": "865-895MHz",
+					"power_on": "5a,01,03,90,01,01,c8,a5",
+					"power_off": "5a,01,03,90,01,00,c9,a5"
+				}
+			]
+		},
+		{
+			"id": "ctrl_s_05",
+			"ip": "192.168.127.254",
+			"port": 10124,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,02,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,59,a5",
+			"modules": [
+				{
+					"name": "900-960MHz",
+					"power_on": "5a,02,03,90,01,01,cb,a5",
+					"power_off": "5a,02,03,90,01,00,ca,a5"
+				}
+			]
+		},
+		{
+			"id": "ctrl_s_06",
+			"ip": "192.168.1.10",
+			"port": 7,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,06,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5b,a5",
+			"modules": [
+				{
+					"name": "2535-2555MHz",
+					"power_on": "01,00",
+					"power_off": "01,02"
+				}
+			]
+		},
+		{
+			"id": "ctrl_s_07",
+			"ip": "192.168.127.253",
+			"port": 10125,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,03,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,58,a5",
+			"modules": [
+				{
+					"name": "1710-1780MHz",
+					"power_on": "5a,03,03,90,01,01,ca,a5",
+					"power_off": "5a,03,03,90,01,00,cb,a5"
+				}
+			]
+		},
+		{
+			"id": "ctrl_s_08",
+			"ip": "192.168.127.253",
+			"port": 10123,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,05,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5e,a5",
+			"modules": [
+				{
+					"name": "3300-3600MHz",
+					"power_on": "5a,05,03,90,01,01,cc,a5",
+					"power_off": "5a,05,03,90,01,00,cd,a5"
+				}
+			]
+		},
+		{
+			"id": "ctrl_s_9",
+			"ip": "192.168.127.253",
+			"port": 10126,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,01,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5a,a5",
+			"modules": [
+				{
+					"name": "705-844MHz",
+					"power_on": "5a,01,03,90,01,01,c8,a5",
+					"power_off": "5a,01,03,90,01,00,c9,a5"
+				}
+			]
+		},
+		{
+			"id": "ctrl_s_10",
+			"ip": "192.168.127.253",
+			"port": 10124,
+			"dual_port": false,
+			"on_command": "FA,FB,FC",
+			"off_command": "FD,FE,FF",
+			"status_command": "5a,04,02,90,01,00,91,01,00,f1,01,00,f2,01,00,20,02,00,00,21,02,00,00,02,02,00,00,5f,a5",
+			"modules": [
+				{
+					"name": "1939-1979MHz",
+					"power_on": "5a,04,03,90,01,01,cd,a5",
+					"power_off": "5a,04,03,90,01,00,cc,a5"
+				}
+			]
+		}
+	]
+}
+
+
+public class ControlSystemUI extends JFrame {
+
+	private static final long serialVersionUID = 1L;
+	private final Map<String, ControlCardSocketHandler> cardHandlers = new HashMap<>();
+	private final Map<String, PowerSupplySocketHandler> psuHandlers = new HashMap<>();
+	private final Map<String, List<JToggleButton>> toggleMap = new HashMap<>();
+	private final Map<String, JLabel> statusLabels = new HashMap<>();
+	private final Map<String, JLabel> freqBandsLabels = new HashMap<>();
+	private JLabel JLabel;
+	private JLabel lblEcmMkIii;
+	private JLabel label_Time;
+	private JPanel panel;
+	private JPanel panel_1;
+	private JPanel panel_2;
+
+	ArrayList<JTextField> vswrList = new ArrayList<>();
+	ArrayList<JTextField> tempList = new ArrayList<>();
+	ArrayList<JTextField> fwdList = new ArrayList<>();
+	ArrayList<JTextField> rflList = new ArrayList<>();
+
+	private JTextPane logPane;
+
+	public ControlSystemUI(Config config) throws InterruptedException {
+		setTitle("ECM MK III Jammer System (20-6000 MHz)");
+		setIconImage(Toolkit.getDefaultToolkit().getImage("images/JammerVehicle.jpg"));
+		setSize(1000, 700);
+		setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+		BorderLayout borderLayout = new BorderLayout();
+		borderLayout.setVgap(25);
+		getContentPane().setLayout(borderLayout);
+		JPanel northPanel = new JPanel();
+		northPanel.setBorder(new LineBorder(new Color(0, 0, 0), 2));
+		northPanel.setLayout(new BorderLayout(0, 0));
+
+		getContentPane().add(northPanel, BorderLayout.NORTH);
+
+		panel = new JPanel();
+		FlowLayout flowLayout_1 = (FlowLayout) panel.getLayout();
+		flowLayout_1.setVgap(20);
+		northPanel.add(panel, BorderLayout.WEST);
+		JButton powerOnAll = new JButton("Power All ON");
+		powerOnAll.setFont(new Font("Arial", Font.BOLD, 14));
+		powerOnAll.setPreferredSize(new Dimension(150, 50));
+		powerOnAll.setFocusPainted(false);
+		powerOnAll.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+		powerOnAll.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+		Color defaultOnColor = powerOnAll.getBackground();
+
+		panel.add(powerOnAll);
+		JButton powerOffAll = new JButton("Power All OFF");
+		powerOffAll.setFont(new Font("Arial", Font.BOLD, 14));
+		powerOffAll.setPreferredSize(new Dimension(150, 50));
+		powerOffAll.setFocusPainted(false);
+		powerOffAll.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+		powerOffAll.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+		Color defaultOffColor = powerOffAll.getBackground();
+
+		panel.add(powerOffAll);
+
+		powerOnAll.addActionListener(new ActionListener() {
+
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				powerOnAll.setForeground(new Color(0, 128, 0));
+				powerOffAll.setBackground(defaultOffColor);
+				powerOffAll.setForeground(Color.BLACK);
+
+			}
+		});
+
+		powerOffAll.addActionListener(new ActionListener() {
+
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				// powerOffAll.setBackground(Color.RED);
+				powerOffAll.setForeground(Color.RED);
+				powerOnAll.setBackground(defaultOnColor);
+				powerOnAll.setForeground(Color.BLACK);
+			}
+		});
+
+		panel_1 = new JPanel();
+		FlowLayout flowLayout = (FlowLayout) panel_1.getLayout();
+		flowLayout.setVgap(30);
+
+		label_Time = new JLabel();
+		panel_1.add(label_Time);
+		label_Time.setFont(new Font("Arial", Font.BOLD, 20));
+		label_Time.setForeground(new Color(0, 128, 0));
+		Timer timer = new Timer(1000, new ActionListener() {
+
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				updateTime();
+			}
+		});
+		timer.start();
+		updateTime();
+		northPanel.add(panel_1, BorderLayout.EAST);
+
+		panel_2 = new JPanel();
+		northPanel.add(panel_2, BorderLayout.CENTER);
+
+		JLabel = new JLabel();
+		panel_2.add(JLabel);
+		JLabel.setIcon(new ImageIcon("images/Bel_logo.png"));
+		JLabel.setFont(new Font("Arial", Font.BOLD, 22));
+		JLabel.setHorizontalAlignment(SwingConstants.LEFT);
+
+		lblEcmMkIii = new JLabel("ECM MK III Jammer System (20-6000 MHz)");
+		panel_2.add(lblEcmMkIii);
+		lblEcmMkIii.setIcon(new ImageIcon("images/JammerVehicle1.jpg"));
+		lblEcmMkIii.setFont(new Font("Arial", Font.BOLD, 22));
+		lblEcmMkIii.setHorizontalAlignment(SwingConstants.RIGHT);
+
+		// Global OFF
+		powerOffAll.addActionListener(e -> {
+			powerOffAllPAs(config);
+		});
+
+		// Global ON
+		powerOnAll.addActionListener(e -> {
+			for (PowerSupply psu : config.power_supplies) {
+				PowerSupplySocketHandler psuHandler = psuHandlers.get(psu.id);
+				if (psuHandler != null && psuHandler.isConnected()) {
+
+					if (psu.id.equals("psu_02")) {
+						psuHandler.enqueueCommand("CO.PS.S,0,1".getBytes());
+
+					} else {
+						for (ControlCard card : psu.control_cards) {
+							if (card.on_command != null && !card.on_command.isEmpty()) {
+								splitCmd(card.on_command, psuHandler);
+
+								psuHandler.enqueueCommand(hexStringToBytes(card.on_command));
+
+								for (int i = 0; i < card.modules.size(); i++) {
+									ControlCardSocketHandler handle = cardHandlers.get(card.id);
+									if (handle != null && handle.isConnected()) {
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			for (ControlCard card : config.standalone_control_cards) {
+				ControlCardSocketHandler handler = cardHandlers.get(card.id);
+				if (handler != null && handler.isConnected()) {
+					// for (Module m : card.modules)
+					for (int i = 0; i < card.modules.size(); i++) {
+					}
+				}
+			}
+		});
+
+		// CENTER PANEL
+		JPanel centerPanel = new JPanel();
+		centerPanel.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), "Amplifier Switch",
+				TitledBorder.CENTER, TitledBorder.TOP, new Font("Segoe UI", Font.BOLD, 20), new Color(0, 0, 0)));
+		centerPanel.setPreferredSize(new Dimension(700, 200));
+		getContentPane().add(centerPanel, BorderLayout.CENTER);
+		centerPanel.setLayout(new BorderLayout(0, 0));
+
+		JTabbedPane tabbedPane = new JTabbedPane();
+		tabbedPane.setTabPlacement(JTabbedPane.TOP);
+		centerPanel.add(tabbedPane);
+
+		JPanel PA_Panel = new JPanel();
+		tabbedPane.addTab("Power Amplifier", PA_Panel);
+		tabbedPane.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		PA_Panel.setLayout(new GridLayout(0, 4, 20, 10));
+
+		JPanel log_Panel = new JPanel();
+		tabbedPane.addTab("Log", log_Panel);
+		log_Panel.setLayout(new BorderLayout(0, 0));
+
+		logPane = new JTextPane();
+		logPane.setEditable(false);
+		log_Panel.add(logPane, BorderLayout.CENTER);
+
+		JScrollPane scrollPane = new JScrollPane(logPane);
+		log_Panel.add(scrollPane, BorderLayout.CENTER);
+
+		JPanel option_panel = new JPanel();
+		option_panel.setPreferredSize(new Dimension(10, 50));
+		log_Panel.add(option_panel, BorderLayout.SOUTH);
+		option_panel.setLayout(new FlowLayout(FlowLayout.RIGHT, 5, 15));
+
+		JButton btnSave = new JButton("Save");
+		btnSave.addActionListener(e -> {
+			try {
+				String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+
+				String fileName = "PA_Log_" + time + " .txt";
+				JFileChooser chooser = new JFileChooser();
+				chooser.setSelectedFile(new File(fileName));
+
+				if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
+					File file = chooser.getSelectedFile();
+
+					if (!file.getName().endsWith(".txt")) {
+						file = new File(file.getAbsolutePath() + ".txt");
+					}
+					String content = logPane.getText();
+
+					Files.write(file.toPath(), content.getBytes());
+
+					JOptionPane.showMessageDialog(null, "File saved: " + file.getName());
+				}
+			} catch (Exception ex) {
+				ex.printStackTrace();
+			}
+
+		});
+		option_panel.add(btnSave);
+
+		JButton btnClear = new JButton("Clear");
+		btnClear.addActionListener(e -> {
+			logPane.setText("");
+		});
+		option_panel.add(btnClear);
+
+		// SOUTH PANEL
+		JPanel southPanel = new JPanel(new GridLayout(1, 0, 15, 10));
+		southPanel.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), "Control Card", TitledBorder.CENTER,
+				TitledBorder.TOP, new Font("Segoe UI", Font.BOLD, 20), new Color(0, 0, 0)));
+		getContentPane().add(southPanel, BorderLayout.SOUTH);
+
+		// EAST PANEL
+		JPanel eastPanel = new JPanel();
+		eastPanel.setBorder(new TitledBorder(new LineBorder(new Color(0, 0, 0)), "Status Query", TitledBorder.CENTER,
+				TitledBorder.TOP, new Font("Segoe UI", Font.BOLD, 20), new Color(0, 0, 0)));
+		eastPanel.setPreferredSize(new Dimension(600, 0));
+
+		getContentPane().add(eastPanel, BorderLayout.EAST);
+		eastPanel.setLayout(new GridLayout(0, 3, 0, 0));
+		JPanel freqband_panel = new JPanel();
+		eastPanel.add(freqband_panel);
+		freqband_panel.setLayout(new BorderLayout(0, 0));
+
+		JPanel freqband_laJPanel = new JPanel();
+		freqband_laJPanel.setBorder(new LineBorder(new Color(0, 0, 0)));
+		freqband_panel.add(freqband_laJPanel, BorderLayout.NORTH);
+
+		JLabel freqLabel = new JLabel("FREQ BAND");
+		freqLabel.setHorizontalAlignment(SwingConstants.CENTER);
+		freqLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+		freqLabel.setForeground(new Color(0, 128, 0));
+		freqband_laJPanel.add(freqLabel, BorderLayout.CENTER);
+
+		JPanel freqband_names_panel = new JPanel();
+		freqband_names_panel.setBorder(new LineBorder(new Color(0, 0, 0)));
+		freqband_panel.add(freqband_names_panel, BorderLayout.CENTER);
+
+		JPanel system_status_panel = new JPanel();
+		eastPanel.add(system_status_panel);
+		system_status_panel.setLayout(new GridLayout(0, 3, 0, 0));
+
+		JPanel lan_panel = new JPanel();
+		system_status_panel.add(lan_panel);
+		lan_panel.setLayout(new BorderLayout(0, 0));
+
+		JPanel lan_laJPanel = new JPanel();
+		lan_laJPanel.setBorder(new LineBorder(new Color(0, 0, 0)));
+		lan_panel.add(lan_laJPanel, BorderLayout.NORTH);
+
+		JLabel lanLabel = new JLabel("LAN");
+		lanLabel.setHorizontalAlignment(SwingConstants.CENTER);
+		lanLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+		lanLabel.setForeground(new Color(0, 128, 0));
+		lan_laJPanel.add(lanLabel);
+
+		JPanel lan_checkbox_panel = new JPanel();
+		lan_checkbox_panel.setBorder(new LineBorder(new Color(0, 0, 0)));
+
+		lan_panel.add(lan_checkbox_panel, BorderLayout.CENTER);
+
+		JPanel vswr_panel = new JPanel();
+		vswr_panel.setPreferredSize(new Dimension(30, 10));
+		system_status_panel.add(vswr_panel);
+		vswr_panel.setLayout(new BorderLayout(0, 0));
+
+		JPanel vswr_laJPanel = new JPanel();
+		vswr_laJPanel.setBorder(new LineBorder(new Color(0, 0, 0)));
+		vswr_panel.add(vswr_laJPanel, BorderLayout.NORTH);
+
+		JLabel vswrLabel = new JLabel("VSWR");
+		vswrLabel.setHorizontalAlignment(SwingConstants.CENTER);
+		vswrLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+		vswrLabel.setForeground(new Color(0, 128, 0));
+		vswr_laJPanel.add(vswrLabel);
+
+		JPanel vswr_checkbox_panel = new JPanel();
+		vswr_checkbox_panel.setBorder(new LineBorder(new Color(0, 0, 0)));
+		vswr_panel.add(vswr_checkbox_panel, BorderLayout.CENTER);
+
+		JPanel temp_panel = new JPanel();
+		system_status_panel.add(temp_panel);
+		temp_panel.setLayout(new BorderLayout(0, 0));
+
+		JPanel temp_laJPanel = new JPanel();
+		temp_laJPanel.setBorder(new LineBorder(Color.BLACK));
+		temp_panel.add(temp_laJPanel, BorderLayout.NORTH);
+
+		JLabel therLabel = new JLabel("TEMP");
+		therLabel.setHorizontalAlignment(SwingConstants.CENTER);
+		therLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+		therLabel.setForeground(new Color(0, 128, 0));
+		temp_laJPanel.add(therLabel);
+
+		JPanel temp_checkbox_panel = new JPanel();
+		temp_checkbox_panel.setBorder(new LineBorder(Color.BLACK));
+		temp_panel.add(temp_checkbox_panel, BorderLayout.CENTER);
+
+		JPanel powermeter_panel = new JPanel();
+		eastPanel.add(powermeter_panel);
+		powermeter_panel.setLayout(new GridLayout(0, 2, 0, 0));
+
+		JPanel fwd_panel = new JPanel();
+		powermeter_panel.add(fwd_panel);
+		fwd_panel.setLayout(new BorderLayout(0, 0));
+
+		JPanel fwd_laJPanel = new JPanel();
+		fwd_laJPanel.setBorder(new LineBorder(Color.BLACK));
+		fwd_panel.add(fwd_laJPanel, BorderLayout.NORTH);
+
+		JLabel fwd_label = new JLabel("FWD");
+		fwd_label.setHorizontalAlignment(SwingConstants.CENTER);
+		fwd_label.setFont(new Font("Segoe UI", Font.BOLD, 16));
+		fwd_label.setForeground(new Color(0, 128, 0));
+
+		fwd_laJPanel.add(fwd_label);
+
+		JPanel fwd_textfields_panel = new JPanel();
+
+		fwd_textfields_panel.setBorder(new LineBorder(new Color(0, 0, 0)));
+		fwd_panel.add(fwd_textfields_panel, BorderLayout.CENTER);
+
+		JPanel rfl_panel = new JPanel();
+		powermeter_panel.add(rfl_panel);
+		rfl_panel.setLayout(new BorderLayout(0, 0));
+
+		JPanel rfl_laJPanel = new JPanel();
+		rfl_laJPanel.setBorder(new LineBorder(new Color(0, 0, 0)));
+		rfl_panel.add(rfl_laJPanel, BorderLayout.NORTH);
+
+		JLabel rfl_label = new JLabel("RFL");
+		rfl_label.setHorizontalAlignment(SwingConstants.CENTER);
+		rfl_label.setFont(new Font("Segoe UI", Font.BOLD, 16));
+		rfl_label.setForeground(new Color(0, 128, 0));
+
+		rfl_laJPanel.add(rfl_label);
+
+		JPanel rfl_textfields_panel = new JPanel();
+		rfl_textfields_panel.setBorder(new LineBorder(new Color(0, 0, 0)));
+		rfl_panel.add(rfl_textfields_panel, BorderLayout.CENTER);
+
+		List<ControlCard> allCards = new ArrayList<>();
+		for (PowerSupply psu : config.power_supplies) {
+			allCards.addAll(psu.control_cards);
+		}
+		allCards.addAll(config.standalone_control_cards);
+
+		// PSU handlers
+		for (PowerSupply psu : config.power_supplies) {
+			String htmlText = "<html><center>PSU<br>" + psu.id + "</center></html>";
+
+			JLabel label = new JLabel(htmlText);
+			label.setOpaque(true);
+			label.setFont(new Font("Segoe UI", Font.BOLD, 16));
+			label.setBackground(Color.RED);
+			label.setPreferredSize(new Dimension(100, 70));
+			label.setForeground(Color.WHITE);
+			label.setHorizontalAlignment(SwingConstants.CENTER);
+			label.setVerticalAlignment(SwingConstants.CENTER);
+			statusLabels.put(psu.id, label);
+			southPanel.add(label);
+
+			PowerSupplySocketHandler psuHandler = new PowerSupplySocketHandler(psu.ip, psu.port, isConnected -> {
+				SwingUtilities.invokeLater(() -> {
+					JLabel lbl = statusLabels.get(psu.id);
+					if (lbl != null)
+						lbl.setBackground(isConnected ? Color.GREEN : Color.RED);
+				});
+			});
+			psuHandler.start();
+			psuHandlers.put(psu.id, psuHandler);
+		}
+
+		int count = 0;
+
+		// Control card handlers and UI
+		for (ControlCard card : allCards) {
+			final String cardId = card.id;
+			int startIndex = vswrList.size();
+			String htmlText = "<html><center>CTRL<br>" + cardId + "</center></html>";
+			JLabel label = new JLabel(htmlText);
+			label.setOpaque(true);
+			label.setFont(new Font("Segoe UI", Font.BOLD, 16));
+			label.setBackground(Color.RED);
+			label.setForeground(Color.WHITE);
+			label.setPreferredSize(new Dimension(100, 70));
+
+			label.setHorizontalAlignment(SwingConstants.CENTER);
+			label.setVerticalAlignment(SwingConstants.CENTER);
+			statusLabels.put(cardId, label);
+			southPanel.add(label);
+
+			List<JToggleButton> toggles = new ArrayList<>();
+
+			for (Module m : card.modules) {
+				JToggleButton toggle = new JToggleButton(m.name);
+				toggle.setFont(new Font("Arial", Font.BOLD, 28));
+				toggle.setForeground(Color.RED);
+				toggle.setCursor(new Cursor(Cursor.HAND_CURSOR));
+				if (!m.name.equalsIgnoreCase("")) {
+					toggle.setEnabled(false);
+				}
+				toggle.setForeground(Color.RED);
+
+				toggle.addItemListener(e -> {
+					if (!toggle.isEnabled())
+						return;
+
+					ControlCardSocketHandler handler = cardHandlers.get(card.id);
+
+					if (handler != null && handler.isConnected()) {
+
+						boolean isOn = toggle.isSelected();
+						String command = isOn ? m.power_on : m.power_off;
+						byte[] cmd = hexStringToBytes(command);
+						toggle.setForeground(isOn ? Color.GREEN : Color.RED);
+
+						String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+						String logMsg = time + " Band: " + m.name + " is " + (isOn ? "POWERED ON" : "POWERED OFF");
+
+						addLog(logMsg);
+
+						if (m.name.equalsIgnoreCase("2400-2500MHz") || m.name.equalsIgnoreCase("136-174MHz")
+								|| m.name.equalsIgnoreCase("5700-5900MHz")) {
+							splitCmd(command, handler);
+						} else {
+							handler.enqueueCommand(cmd);
+						}
+					}
+				});
+
+				PA_Panel.add(toggle);
+				toggles.add(toggle);
+			}
+
+			toggleMap.put(card.id, toggles);
+			for (Module freq : card.modules) {
+				JLabel bandsLabel = new JLabel(freq.name);
+				bandsLabel.setFont(new Font("Segoe UI", Font.BOLD, 15));
+				bandsLabel.setHorizontalAlignment(SwingConstants.CENTER);
+				freqBandsLabels.put(card.id, bandsLabel);
+				freqband_names_panel.add(bandsLabel);
+			}
+
+			ArrayList<JCheckBox> temp = new ArrayList<>();
+
+			for (int i = 0; i < card.modules.size(); i++) {
+				JCheckBox lanBox = new JCheckBox("");
+				temp.add(lanBox);
+				lanBox.setHorizontalAlignment(SwingConstants.CENTER);
+				lanBox.setEnabled(false);
+				lan_checkbox_panel.add(lanBox);
+				count++;
+			}
+			lan_checkbox_panel.revalidate();
+			lan_checkbox_panel.repaint();
+
+			for (int i = 0; i < card.modules.size(); i++) {
+				JTextField vswrBox = new JTextField();
+				vswrBox.setText("--");
+				vswrBox.setHorizontalAlignment(SwingConstants.CENTER);
+				vswrBox.setEditable(false);
+				vswrBox.setBackground(Color.WHITE);
+				vswr_checkbox_panel.add(vswrBox);
+				vswrList.add(vswrBox);
+			}
+
+			for (int i = 0; i < card.modules.size(); i++) {
+				JTextField therBox = new JTextField();
+				therBox.setText("--");
+				therBox.setHorizontalAlignment(SwingConstants.CENTER);
+				therBox.setEditable(false);
+				therBox.setBackground(Color.WHITE);
+				temp_checkbox_panel.add(therBox);
+				tempList.add(therBox);
+			}
+
+			for (int i = 0; i < card.modules.size(); i++) {
+				JTextField fwdField = new JTextField();
+				fwdField.setText("--");
+				fwdField.setHorizontalAlignment(SwingConstants.CENTER);
+				fwdField.setEditable(false);
+				fwdField.setBackground(Color.WHITE);
+				fwd_textfields_panel.add(fwdField);
+				fwdList.add(fwdField);
+			}
+
+			for (int i = 0; i < card.modules.size(); i++) {
+				JTextField rflField = new JTextField();
+				rflField.setText("--");
+				rflField.setHorizontalAlignment(SwingConstants.CENTER);
+				rflField.setEditable(false);
+				rflField.setBackground(Color.WHITE);
+				rfl_textfields_panel.add(rflField);
+				rflList.add(rflField);
+			}
+
+			// Check if this card needs dual port connection
+			boolean needsDualPort = card.dual_port;
+
+			if (needsDualPort) {
+				// Create dual port handler
+				DualPortHandler handler = new DualPortHandler(
+					card.ip, 
+					card.port,
+					card.status_enable_command != null ? hexStringToBytes(card.status_enable_command) : null,
+					hexStringToBytes(card.status_command),
+					isConnected -> updateCardStatus(cardId, isConnected),
+					data -> {
+						SwingUtilities.invokeLater(() -> {
+							for (int i = 0; i < card.modules.size(); i++) {
+								JTextField vswrField = vswrList.get(startIndex + i);
+								JTextField tempField = tempList.get(startIndex + i);
+								
+								double vswr = data.vswr;
+								vswrField.setText(String.valueOf(vswr));
+								
+								if (vswr >= 3.5) {
+									vswrField.setBackground(Color.RED);
+									vswrField.setForeground(Color.WHITE);
+									vswrField.setToolTipText("Alert VSWR High..!");
+								} else if (vswr >= 2.5) {
+									vswrField.setBackground(Color.YELLOW);
+									vswrField.setForeground(Color.BLACK);
+									vswrField.setToolTipText("Warning VSWR");
+								} else {
+									vswrField.setBackground(Color.GREEN);
+									vswrField.setForeground(Color.BLACK);
+									vswrField.setToolTipText(null);
+								}
+								
+								int temperature = data.temp;
+								tempField.setText(String.valueOf(temperature));
+								
+								if (temperature >= 60) {
+									tempField.setBackground(Color.RED);
+									tempField.setForeground(Color.WHITE);
+									tempField.setToolTipText("Alert High Temperature..!");
+								} else if (temperature >= 45) {
+									tempField.setBackground(Color.YELLOW);
+									tempField.setForeground(Color.BLACK);
+									tempField.setToolTipText("Warning Temperature is above high");
+								} else {
+									tempField.setBackground(Color.GREEN);
+									tempField.setForeground(Color.BLACK);
+									tempField.setToolTipText(null);
+								}
+								
+								fwdList.get(startIndex + i).setText(String.valueOf(data.fwd));
+								rflList.get(startIndex + i).setText(String.valueOf(data.rfl));
+							}
+						});
+					}
+				);
+				handler.start();
+				cardHandlers.put(card.id, handler);
+			} else {
+				// Regular handler
+				ControlCardSocketHandler handler = new ControlCardSocketHandler(
+					card.ip, 
+					card.port, 
+					hexStringToBytes(card.status_command), 
+					isConnected -> updateCardStatus(cardId, isConnected),
+					data -> {
+						SwingUtilities.invokeLater(() -> {
+							for (int i = 0; i < card.modules.size(); i++) {
+								JTextField vswrField = vswrList.get(startIndex + i);
+								JTextField tempField = tempList.get(startIndex + i);
+								
+								double vswr = data.vswr;
+								vswrField.setText(String.valueOf(vswr));
+								
+								if (vswr >= 3.5) {
+									vswrField.setBackground(Color.RED);
+									vswrField.setForeground(Color.WHITE);
+									vswrField.setToolTipText("Alert VSWR High..!");
+								} else if (vswr >= 2.5) {
+									vswrField.setBackground(Color.YELLOW);
+									vswrField.setForeground(Color.BLACK);
+									vswrField.setToolTipText("Warning VSWR");
+								} else {
+									vswrField.setBackground(Color.GREEN);
+									vswrField.setForeground(Color.BLACK);
+									vswrField.setToolTipText(null);
+								}
+								
+								int temperature = data.temp;
+								tempField.setText(String.valueOf(temperature));
+								
+								if (temperature >= 60) {
+									tempField.setBackground(Color.RED);
+									tempField.setForeground(Color.WHITE);
+									tempField.setToolTipText("Alert High Temperature..!");
+								} else if (temperature >= 45) {
+									tempField.setBackground(Color.YELLOW);
+									tempField.setForeground(Color.BLACK);
+									tempField.setToolTipText("Warning Temperature is above high");
+								} else {
+									tempField.setBackground(Color.GREEN);
+									tempField.setForeground(Color.BLACK);
+									tempField.setToolTipText(null);
+								}
+								
+								fwdList.get(startIndex + i).setText(String.valueOf(data.fwd));
+								rflList.get(startIndex + i).setText(String.valueOf(data.rfl));
+							}
+						});
+					}
+				);
+				Thread t = new Thread(handler);
+				t.start();
+				handler.setLans(temp);
+				cardHandlers.put(card.id, handler);
+			}
+
+			Thread.sleep(10);
+		}
+
+		ScheduledExecutorService logScheduler = Executors.newSingleThreadScheduledExecutor();
+		logScheduler.scheduleAtFixedRate(() -> {
+
+			for (ControlCard card : allCards) {
+
+				ControlCardSocketHandler handler = cardHandlers.get(card.id);
+				List<JToggleButton> toggles = toggleMap.get(card.id);
+
+				if (handler != null && handler.isConnected()) {
+					HardwareData data = handler.getLastData();
+					if (data != null && data.paOn && toggles != null) {
+						for (int i = 0; i < card.modules.size(); i++) {
+							Module m = card.modules.get(i);
+							JToggleButton button = toggles.get(i);
+
+							if (button.isSelected()) {
+
+								String time = LocalDateTime.now()
+										.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+
+								String log = time + "Band: " + m.name + " | VSWR: " + data.vswr + " | TEMP: "
+										+ data.temp + " | FWD: " + data.fwd + " | RFL: " + data.rfl;
+
+								addLog(log);
+							}
+						}
+					}
+				}
+
+			}
+
+		}, 0, 5, TimeUnit.SECONDS);
+
+		freqband_names_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		lan_checkbox_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		vswr_checkbox_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		temp_checkbox_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		fwd_textfields_panel.setLayout(new GridLayout(count, 0, 0, 0));
+		rfl_textfields_panel.setLayout(new GridLayout(count, 0, 0, 0));
+
+		addWindowListener(new WindowAdapter() {
+			@Override
+			public void windowClosing(WindowEvent e) {
+
+				powerOffAllPAs(config); // off command before exit
+			}
+		});
+		setVisible(true);
+	}
+
+	private void powerOffAllPAs(Config config) {
+		for (PowerSupply psu : config.power_supplies) {
+			PowerSupplySocketHandler psuHandler = psuHandlers.get(psu.id);
+			if (psuHandler != null && psuHandler.isConnected()) {
+
+				if (psu.id.equals("psu_02")) {
+					psuHandler.enqueueCommand("CO.PS.S,0,0".getBytes());
+				} else {
+
+					for (ControlCard card : psu.control_cards) {
+						if (card.off_command != null && !card.off_command.isEmpty()) {
+							splitCmd(card.off_command, psuHandler);
+							psuHandler.enqueueCommand(hexStringToBytes(card.off_command));
+						} else {
+							for (Module m : card.modules) {
+								psuHandler.enqueueCommand(hexStringToBytes(m.power_off));
+							}
+						}
+					}
+				}
+			}
+		}
+		for (ControlCard card : config.standalone_control_cards) {
+			ControlCardSocketHandler handler = cardHandlers.get(card.id);
+			if (handler != null && handler.isConnected()) {
+				for (Module m : card.modules) {
+					handler.enqueueCommand(hexStringToBytes(m.power_off));
+				}
+			}
+		}
+	}
+
+	private byte[] hexStringToBytes(String hex) {
+		if (hex == null || hex.trim().isEmpty()) {
+			return new byte[0];
+		}
+
+		String[] parts = hex.trim().split(",");
+		List<Byte> byteList = new ArrayList<>();
+
+		for (String part : parts) {
+			String value = part.trim();
+
+			if (!value.isEmpty()) { // skip empty values
+				byteList.add((byte) Integer.parseInt(value, 16));
+			}
+		}
+
+		byte[] bytes = new byte[byteList.size()];
+		for (int i = 0; i < byteList.size(); i++) {
+			bytes[i] = byteList.get(i);
+		}
+
+		return bytes;
+	}
+
+	@Override
+	public void dispose() {
+		for (ControlCardSocketHandler handler : cardHandlers.values()) {
+			handler.shutdown();
+		}
+		for (PowerSupplySocketHandler handler : psuHandlers.values()) {
+			handler.shutdown();
+		}
+		super.dispose();
+	}
+
+	private void addLog(String msg) {
+		SwingUtilities.invokeLater(() -> {
+			try {
+				Document doc = logPane.getDocument();
+
+				SimpleAttributeSet attr = new SimpleAttributeSet();
+				StyleConstants.setFontFamily(attr, "Arial");
+				StyleConstants.setFontSize(attr, 14);
+				StyleConstants.setBold(attr, true);
+				StyleConstants.setForeground(attr, Color.BLUE);
+				doc.insertString(doc.getLength(), msg + "\n", attr);
+			} catch (BadLocationException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		});
+	}
+
+	private void updateTime() {
+		SimpleDateFormat sdf = new SimpleDateFormat("dd-MM-yyyy hh:mm:ss a");
+		label_Time.setText(sdf.format(new Date()));
+	}
+
+	private void splitCmd(String command, ControlCardSocketHandler handler) {
+
+		String delimeter = "0d,0a";
+		String[] parts = command.split(delimeter);
+
+		for (String part : parts) {
+			if (!part.trim().isEmpty()) {
+				byte[] cmd = hexStringToBytes(part);
+				handler.enqueueCommand(cmd);
+			}
+		}
+	}
+
+	private void updateCardStatus(String cardId, boolean isConnected) {
+		SwingUtilities.invokeLater(() -> {
+
+			JLabel lbl = statusLabels.get(cardId);
+
+			if (lbl != null) {
+				lbl.setBackground(isConnected ? Color.GREEN : Color.RED);
+				lbl.setOpaque(true);
+				lbl.revalidate();
+				lbl.repaint();
+			} else {
+				System.out.println("Label not found for: " + cardId);
+			}
+		});
+	}
+
+	private void splitCmd(String command, PowerSupplySocketHandler psuhandler) {
+		String delimeter = "0d,0a";
+		int start = 0;
+		while (true) {
+			int index = command.indexOf(delimeter, start);
+			if (index == -1)
+				break;
+
+			String cmdStr = command.substring(start, index);
+
+			if (!cmdStr.trim().isEmpty()) {
+				byte[] cmdBytes = hexStringToBytes(cmdStr);
+				psuhandler.enqueueCommand(cmdBytes);
+			}
+			start = index + delimeter.length() + 1;
+		}
+	}
+}
+
+import java.io.*;
+import java.net.*;
+import java.util.concurrent.*;
+import java.util.function.Consumer;
+
+public class DualPortHandler implements Runnable {
+    private final String ip;
+    private final int controlPort;
+    private static final int STATUS_PORT = 20108;
+    private final byte[] statusEnableCommand;
+    private final byte[] statusCommand;
+    private final Consumer<Boolean> statusCallback;
+    private final Consumer<HardwareData> dataCallback;
+    private volatile boolean running = true;
+    private volatile boolean connected = false;
+    private Socket controlSocket;
+    private Socket statusSocket;
+    private OutputStream controlOut;
+    private OutputStream statusOut;
+    private final ArrayBlockingQueue<byte[]> sendQueue = new ArrayBlockingQueue<>(100);
+    private volatile HardwareData lastData;
+    private Thread senderThread;
+    private ScheduledExecutorService scheduler;
+
+    public DualPortHandler(String ip, int controlPort, byte[] statusEnableCommand, 
+                          byte[] statusCommand, Consumer<Boolean> statusCallback, 
+                          Consumer<HardwareData> dataCallback) {
+        this.ip = ip;
+        this.controlPort = controlPort;
+        this.statusEnableCommand = statusEnableCommand;
+        this.statusCommand = statusCommand;
+        this.statusCallback = statusCallback;
+        this.dataCallback = dataCallback;
+    }
+
+    @Override
+    public void run() {
+        while (running) {
+            try {
+                // Step 1: Connect to status port 20108
+                System.out.println("Connecting to status port " + STATUS_PORT + " for " + ip);
+                statusSocket = new Socket();
+                statusSocket.connect(new InetSocketAddress(ip, STATUS_PORT), 5000);
+                statusOut = statusSocket.getOutputStream();
+                
+                // Step 2: Send command to enable PA status
+                if (statusEnableCommand != null && statusEnableCommand.length > 0) {
+                    System.out.println("Enabling PA status...");
+                    statusOut.write(statusEnableCommand);
+                    statusOut.flush();
+                    Thread.sleep(500); // Wait for response
+                }
+                
+                // Step 3: Get default values
+                System.out.println("Requesting default values...");
+                statusOut.write(statusCommand);
+                statusOut.flush();
+                
+                // Start status receiver thread
+                Thread statusReceiver = new Thread(() -> {
+                    try {
+                        InputStream in = statusSocket.getInputStream();
+                        while (running && !statusSocket.isClosed()) {
+                            byte[] frame = readFrame(in);
+                            if (frame != null && verifyXor(frame)) {
+                                HardwareData data = parseFrame(frame);
+                                this.lastData = data;
+                                if (dataCallback != null) {
+                                    dataCallback.accept(data);
+                                }
+                                System.out.println("Received data: VSWR=" + data.vswr + 
+                                                   " TEMP=" + data.temp + 
+                                                   " FWD=" + data.fwd + 
+                                                   " RFL=" + data.rfl);
+                            }
+                        }
+                    } catch (Exception e) {
+                        System.out.println("Status receiver stopped for " + ip);
+                    }
+                });
+                statusReceiver.start();
+                
+                // Step 4: Connect to control port
+                System.out.println("Connecting to control port " + controlPort + " for " + ip);
+                controlSocket = new Socket();
+                controlSocket.connect(new InetSocketAddress(ip, controlPort), 5000);
+                controlOut = controlSocket.getOutputStream();
+                
+                connected = true;
+                if (statusCallback != null) {
+                    statusCallback.accept(true);
+                }
+                
+                // Start sender for control commands
+                startSender();
+                
+                // Start auto polling for status
+                startAutoPolling();
+                
+                System.out.println("Dual port connection established for " + ip);
+                
+                // Wait for disconnection
+                while (running && controlSocket != null && !controlSocket.isClosed()) {
+                    Thread.sleep(200);
+                }
+                
+            } catch (Exception e) {
+                System.out.println("Dual port connection failed for: " + ip + " - " + e.getMessage());
+                connected = false;
+                if (statusCallback != null) {
+                    statusCallback.accept(false);
+                }
+                closeSockets();
+                try {
+                    Thread.sleep(3000);
+                } catch (InterruptedException ignored) {}
+            }
+        }
+    }
+
+    private void startSender() {
+        senderThread = new Thread(() -> {
+            try {
+                while (running && controlSocket != null && !controlSocket.isClosed()) {
+                    byte[] cmd = sendQueue.take();
+                    if (controlOut != null) {
+                        controlOut.write(cmd);
+                        controlOut.flush();
+                        System.out.println("Sent to control port: " + bytesToHex(cmd));
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("Sender stopped for " + ip);
+            }
+        });
+        senderThread.start();
+    }
+
+    private void startAutoPolling() {
+        if (statusCommand == null || statusCommand.length == 0) return;
+        scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(() -> {
+            if (connected && statusOut != null) {
+                try {
+                    statusOut.write(statusCommand);
+                    statusOut.flush();
+                } catch (IOException e) {
+                    System.out.println("Status polling failed for " + ip);
+                }
+            }
+        }, 0, 1, TimeUnit.SECONDS);
+    }
+
+    private byte[] readFrame(InputStream in) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        int b;
+        
+        // Wait for frame start (0x5A)
+        int timeoutCount = 0;
+        while ((b = in.read()) != -1) {
+            if (b == 0x5A) {
+                buffer.write(b);
+                break;
+            }
+            timeoutCount++;
+            if (timeoutCount > 1000) return null;
+        }
+        if (b == -1) return null;
+        
+        // Read until frame end (0xA5)
+        while ((b = in.read()) != -1) {
+            buffer.write(b);
+            if (b == 0xA5) {
+                break;
+            }
+            if (buffer.size() > 2048) return null;
+        }
+        return buffer.toByteArray();
+    }
+
+    private boolean verifyXor(byte[] frame) {
+        if (frame.length < 3) return false;
+        int xor = 0;
+        for (int i = 0; i < frame.length - 2; i++) {
+            xor ^= frame[i];
+        }
+        return xor == (frame[frame.length - 2] & 0xFF);
+    }
+
+    private HardwareData parseFrame(byte[] frame) {
+        HardwareData data = new HardwareData();
+        data.paOn = false;
+        int i = 0;
+        
+        while (i < frame.length) {
+            int id = frame[i] & 0xFF;
+            
+            if (id == 0xF1) {
+                data.fwd = frame[i + 2] & 0xFF;
+                if (data.fwd > 0) data.paOn = true;
+                i += 3;
+            } else if (id == 0xF2) {
+                data.rfl = frame[i + 2] & 0xFF;
+                i += 3;
+            } else if (id == 0x20) {
+                data.temp = ((frame[i + 2] & 0xFF) << 8) | (frame[i + 3] & 0xFF);
+                i += 4;
+            } else if (id == 0x21) {
+                int raw = ((frame[i + 2] & 0xFF) << 8) | (frame[i + 3] & 0xFF);
+                data.vswr = raw / 10.0;
+                i += 4;
+            } else {
+                i++;
+            }
+        }
+        return data;
+    }
+
+    public void enqueueCommand(byte[] command) {
+        if (command != null && connected) {
+            try {
+                sendQueue.offer(command, 100, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    public boolean isConnected() {
+        return connected;
+    }
+
+    public HardwareData getLastData() {
+        return lastData;
+    }
+
+    public void start() {
+        new Thread(this).start();
+    }
+
+    public void shutdown() {
+        running = false;
+        closeSockets();
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+        }
+        if (senderThread != null) {
+            senderThread.interrupt();
+        }
+    }
+
+    private void closeSockets() {
+        connected = false;
+        try {
+            if (controlSocket != null && !controlSocket.isClosed()) {
+                controlSocket.close();
+            }
+        } catch (Exception ignored) {}
+        try {
+            if (statusSocket != null && !statusSocket.isClosed()) {
+                statusSocket.close();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02X ", b));
+        }
+        return sb.toString();
+    }
+}
+
+import java.util.List;
+
+public class Config {
+    public List<PowerSupply> power_supplies;
+    public List<ControlCard> standalone_control_cards;
+
+    public static class PowerSupply {
+        public String id;
+        public String ip;
+        public int port;
+        public List<ControlCard> control_cards;
+    }
+
+    public static class ControlCard {
+        public String id;
+        public String ip;
+        public int port;
+        public boolean dual_port;
+        public String status_enable_command;
+        public int status_port;
+        public String on_command;
+        public String off_command;
+        public String status_command;
+        public List<Module> modules;
+    }
+
+    public static class Module {
+        public String name;
+        public String power_on;
+        public String power_off;
+    }
+}

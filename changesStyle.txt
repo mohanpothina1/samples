@@ -1,0 +1,384 @@
+package panels;
+
+import model.PowerSupply;
+
+import javax.swing.*;
+import java.awt.*;
+
+public class PowerSupplyPanel extends JPanel {
+
+    private JTextField txtId = new JTextField(25);
+    private JTextField txtIp = new JTextField(25);
+    private JTextField txtPort = new JTextField(10);
+
+    private JButton btnApply = new JButton("Apply");
+
+    private PowerSupply powerSupply;
+
+    public PowerSupplyPanel() {
+
+        setLayout(new GridBagLayout());
+
+        GridBagConstraints gbc = new GridBagConstraints();
+
+        gbc.insets = new Insets(5,5,5,5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+
+        gbc.gridx=0;
+        gbc.gridy=0;
+        add(new JLabel("ID"),gbc);
+
+        gbc.gridx=1;
+        add(txtId,gbc);
+
+        gbc.gridx=0;
+        gbc.gridy++;
+        add(new JLabel("IP"),gbc);
+
+        gbc.gridx=1;
+        add(txtIp,gbc);
+
+        gbc.gridx=0;
+        gbc.gridy++;
+        add(new JLabel("Port"),gbc);
+
+        gbc.gridx=1;
+        add(txtPort,gbc);
+
+        gbc.gridx=1;
+        gbc.gridy++;
+        add(btnApply,gbc);
+
+        btnApply.addActionListener(e->applyChanges());
+
+    }
+
+    public void load(PowerSupply ps){
+
+        powerSupply=ps;
+
+        txtId.setText(ps.getId());
+        txtIp.setText(ps.getIp());
+        txtPort.setText(String.valueOf(ps.getPort()));
+
+    }
+
+    private void applyChanges(){
+
+        if(powerSupply==null)
+            return;
+
+        powerSupply.setId(txtId.getText());
+        powerSupply.setIp(txtIp.getText());
+        powerSupply.setPort(Integer.parseInt(txtPort.getText()));
+
+    }
+
+}
+
+
+package panels;
+
+import model.ControlCard;
+
+import javax.swing.*;
+import java.awt.*;
+
+public class ControlCardPanel extends JPanel {
+
+    private JTextField txtId=new JTextField(25);
+    private JTextField txtIp=new JTextField(25);
+    private JTextField txtPort=new JTextField(10);
+
+    private JTextArea txtOn=new JTextArea(3,30);
+    private JTextArea txtOff=new JTextArea(3,30);
+    private JTextArea txtStatus=new JTextArea(3,30);
+
+    private JButton btnApply=new JButton("Apply");
+
+    private ControlCard card;
+
+    public ControlCardPanel(){
+
+        setLayout(new GridBagLayout());
+
+        GridBagConstraints gbc=new GridBagConstraints();
+
+        gbc.insets=new Insets(5,5,5,5);
+        gbc.fill=GridBagConstraints.HORIZONTAL;
+
+        int row=0;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("ID"),gbc);
+
+        gbc.gridx=1;
+        add(txtId,gbc);
+
+        row++;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("IP"),gbc);
+
+        gbc.gridx=1;
+        add(txtIp,gbc);
+
+        row++;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("Port"),gbc);
+
+        gbc.gridx=1;
+        add(txtPort,gbc);
+
+        row++;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("ON Command"),gbc);
+
+        gbc.gridx=1;
+        add(new JScrollPane(txtOn),gbc);
+
+        row++;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("OFF Command"),gbc);
+
+        gbc.gridx=1;
+        add(new JScrollPane(txtOff),gbc);
+
+        row++;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("STATUS Command"),gbc);
+
+        gbc.gridx=1;
+        add(new JScrollPane(txtStatus),gbc);
+
+        row++;
+
+        gbc.gridx=1;
+        gbc.gridy=row;
+        add(btnApply,gbc);
+
+        btnApply.addActionListener(e->applyChanges());
+
+    }
+
+    public void load(ControlCard cc){
+
+        card=cc;
+
+        txtId.setText(cc.getId());
+        txtIp.setText(cc.getIp());
+        txtPort.setText(String.valueOf(cc.getPort()));
+
+        txtOn.setText(cc.getOn_command());
+        txtOff.setText(cc.getOff_command());
+
+        txtStatus.setText(
+                cc.getStatus_command()==null?
+                        "":
+                        cc.getStatus_command());
+
+    }
+
+    private void applyChanges(){
+
+        if(card==null)
+            return;
+
+        card.setId(txtId.getText());
+        card.setIp(txtIp.getText());
+        card.setPort(Integer.parseInt(txtPort.getText()));
+
+        card.setOn_command(txtOn.getText());
+        card.setOff_command(txtOff.getText());
+        card.setStatus_command(txtStatus.getText());
+
+    }
+
+}
+
+package panels;
+
+import model.Module;
+
+import javax.swing.*;
+import java.awt.*;
+
+public class ModulePanel extends JPanel {
+
+    private JTextField txtName=new JTextField(25);
+
+    private JTextArea txtPowerOn=new JTextArea(3,30);
+
+    private JTextArea txtPowerOff=new JTextArea(3,30);
+
+    private JButton btnApply=new JButton("Apply");
+
+    private Module module;
+
+    public ModulePanel(){
+
+        setLayout(new GridBagLayout());
+
+        GridBagConstraints gbc=new GridBagConstraints();
+
+        gbc.insets=new Insets(5,5,5,5);
+        gbc.fill=GridBagConstraints.HORIZONTAL;
+
+        int row=0;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("Module Name"),gbc);
+
+        gbc.gridx=1;
+        add(txtName,gbc);
+
+        row++;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("Power ON"),gbc);
+
+        gbc.gridx=1;
+        add(new JScrollPane(txtPowerOn),gbc);
+
+        row++;
+
+        gbc.gridx=0;
+        gbc.gridy=row;
+        add(new JLabel("Power OFF"),gbc);
+
+        gbc.gridx=1;
+        add(new JScrollPane(txtPowerOff),gbc);
+
+        row++;
+
+        gbc.gridx=1;
+        gbc.gridy=row;
+        add(btnApply,gbc);
+
+        btnApply.addActionListener(e->apply());
+
+    }
+
+    public void load(Module m){
+
+        module=m;
+
+        txtName.setText(m.getName());
+
+        txtPowerOn.setText(m.getPower_on());
+
+        txtPowerOff.setText(m.getPower_off());
+
+    }
+
+    private void apply(){
+
+        if(module==null)
+            return;
+
+        module.setName(txtName.getText());
+
+        module.setPower_on(txtPowerOn.getText());
+
+        module.setPower_off(txtPowerOff.getText());
+
+    }
+
+}
+
+package panels;
+
+import java.awt.CardLayout;
+
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+
+import model.ControlCard;
+import model.Module;
+import model.PowerSupply;
+
+public class PropertyPanel extends JPanel {
+
+    private CardLayout cardLayout;
+
+    private JPanel emptyPanel;
+
+    private PowerSupplyPanel powerSupplyPanel;
+
+    private ControlCardPanel controlCardPanel;
+
+    private ModulePanel modulePanel;
+
+    public PropertyPanel() {
+
+        cardLayout = new CardLayout();
+
+        setLayout(cardLayout);
+
+        // Empty panel
+        emptyPanel = new JPanel();
+        emptyPanel.add(new JLabel("Select a node from the tree"));
+
+        // Editor panels
+        powerSupplyPanel = new PowerSupplyPanel();
+        controlCardPanel = new ControlCardPanel();
+        modulePanel = new ModulePanel();
+
+        // Add all cards
+        add(emptyPanel, "EMPTY");
+        add(powerSupplyPanel, "PSU");
+        add(controlCardPanel, "CC");
+        add(modulePanel, "MODULE");
+
+        cardLayout.show(this, "EMPTY");
+    }
+
+    public void showObject(Object obj) {
+
+        if (obj instanceof PowerSupply) {
+
+            powerSupplyPanel.load((PowerSupply) obj);
+            cardLayout.show(this, "PSU");
+
+        } else if (obj instanceof ControlCard) {
+
+            controlCardPanel.load((ControlCard) obj);
+            cardLayout.show(this, "CC");
+
+        } else if (obj instanceof Module) {
+
+            modulePanel.load((Module) obj);
+            cardLayout.show(this, "MODULE");
+
+        } else {
+
+            cardLayout.show(this, "EMPTY");
+        }
+    }
+}
+
+tree.addTreeSelectionListener(e -> {
+
+    DefaultMutableTreeNode node =
+            (DefaultMutableTreeNode) tree.getLastSelectedPathComponent();
+
+    if (node == null)
+        return;
+
+    Object obj = node.getUserObject();
+
+    propertyPanel.showObject(obj);
+
+});

@@ -1,0 +1,753 @@
+public class Config {
+
+    private List<PowerSupply> power_supplies = new ArrayList<>();
+    private List<ControlCard> standalone_control_cards = new ArrayList<>();
+
+    public Config() {
+    }
+
+    public List<PowerSupply> getPower_supplies() {
+        return power_supplies;
+    }
+
+    public void setPower_supplies(List<PowerSupply> power_supplies) {
+        this.power_supplies = power_supplies;
+    }
+
+    public List<ControlCard> getStandalone_control_cards() {
+        return standalone_control_cards;
+    }
+
+    public void setStandalone_control_cards(List<ControlCard> standalone_control_cards) {
+        this.standalone_control_cards = standalone_control_cards;
+    }
+}
+
+public class ConfigManager {
+
+    private final ObjectMapper mapper;
+
+    public ConfigManager() {
+        mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+    }
+
+    public Config load(String filePath) throws IOException {
+        return mapper.readValue(new File(filePath), Config.class);
+    }
+
+    public void save(Config config, String filePath) throws IOException {
+        mapper.writeValue(new File(filePath), config);
+    }
+}
+
+public class ControlCard {
+
+    private String id;
+    private String ip;
+    private int port;
+
+    private String on_command;
+    private String off_command;
+    private String status_command;
+
+    private List<Module> modules = new ArrayList<>();
+
+    public ControlCard() {
+    }
+
+    public ControlCard(String id, String ip, int port) {
+        this.id = id;
+        this.ip = ip;
+        this.port = port;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getIp() {
+        return ip;
+    }
+
+    public void setIp(String ip) {
+        this.ip = ip;
+    }
+
+    public int getPort() {
+        return port;
+    }
+
+    public void setPort(int port) {
+        this.port = port;
+    }
+
+    public String getOn_command() {
+        return on_command;
+    }
+
+    public void setOn_command(String on_command) {
+        this.on_command = on_command;
+    }
+
+    public String getOff_command() {
+        return off_command;
+    }
+
+    public void setOff_command(String off_command) {
+        this.off_command = off_command;
+    }
+
+    public String getStatus_command() {
+        return status_command;
+    }
+
+    public void setStatus_command(String status_command) {
+        this.status_command = status_command;
+    }
+
+    public List<Module> getModules() {
+        return modules;
+    }
+
+    public void setModules(List<Module> modules) {
+        this.modules = modules;
+    }
+
+    @Override
+    public String toString() {
+        return id;
+    }
+}
+
+public class Module {
+
+    private String name;
+    private String power_on;
+    private String power_off;
+
+    public Module() {
+    }
+
+    public Module(String name, String power_on, String power_off) {
+        this.name = name;
+        this.power_on = power_on;
+        this.power_off = power_off;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public String getPower_on() {
+        return power_on;
+    }
+
+    public void setPower_on(String power_on) {
+        this.power_on = power_on;
+    }
+
+    public String getPower_off() {
+        return power_off;
+    }
+
+    public void setPower_off(String power_off) {
+        this.power_off = power_off;
+    }
+
+    @Override
+    public String toString() {
+        return name;
+    }
+}
+
+public class PowerSupply {
+
+    private String id;
+    private String ip;
+    private int port;
+
+    private List<ControlCard> control_cards = new ArrayList<>();
+
+    public PowerSupply() {
+    }
+
+    public PowerSupply(String id, String ip, int port) {
+        this.id = id;
+        this.ip = ip;
+        this.port = port;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getIp() {
+        return ip;
+    }
+
+    public void setIp(String ip) {
+        this.ip = ip;
+    }
+
+    public int getPort() {
+        return port;
+    }
+
+    public void setPort(int port) {
+        this.port = port;
+    }
+
+    public List<ControlCard> getControl_cards() {
+        return control_cards;
+    }
+
+    public void setControl_cards(List<ControlCard> control_cards) {
+        this.control_cards = control_cards;
+    }
+
+    @Override
+    public String toString() {
+        return id;
+    }
+}
+
+public class TestMain {
+
+    public static void main(String[] args) {
+
+        try {
+
+            ConfigManager manager = new ConfigManager();
+
+            System.out.println("Working Directory: " +
+                    new java.io.File(".").getAbsolutePath());
+            Config config = manager.load("config.json");
+
+            System.out.println("Power Supplies");
+
+            for (PowerSupply ps : config.getPower_supplies()) {
+
+                System.out.println("--------------------------------");
+                System.out.println(ps.getId());
+                System.out.println(ps.getIp());
+                System.out.println(ps.getPort());
+
+                for (ControlCard cc : ps.getControl_cards()) {
+
+                    System.out.println("   " + cc.getId());
+
+                    for (Module m : cc.getModules()) {
+
+                        System.out.println("      " + m.getName());
+                    }
+                }
+            }
+
+            System.out.println();
+            System.out.println("Standalone Control Cards");
+
+            for (ControlCard cc : config.getStandalone_control_cards()) {
+
+                System.out.println("--------------------------------");
+                System.out.println(cc.getId());
+
+                for (Module m : cc.getModules()) {
+
+                    System.out.println("   " + m.getName());
+                }
+            }
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+        }
+    }
+}
+
+
+public class ConfigEditorFrame extends JFrame {
+
+    private Config config;
+
+    private JTree tree;
+    private DefaultTreeModel treeModel;
+
+    private PropertyPanel propertyPanel;
+    
+    private JButton btnSave = new JButton("Save Config");
+    private JButton btnReload = new JButton("Reload");
+
+    public ConfigEditorFrame() {
+
+        super("Configuration Editor");
+
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setSize(1000,650);
+        setLocationRelativeTo(null);
+
+        loadConfig();
+
+        initUI();
+    }
+
+    private void loadConfig() {
+
+        try {
+
+            ConfigManager manager = new ConfigManager();
+
+            config = manager.load("config.json");
+
+        }
+        catch(Exception e) {
+
+            e.printStackTrace();
+        }
+    }
+
+    private void initUI() {
+
+        JSplitPane split = new JSplitPane();
+
+        split.setDividerLocation(300);
+
+        tree = new JTree(buildTree());
+        
+        tree.addTreeSelectionListener(e -> {
+
+            DefaultMutableTreeNode node =
+                    (DefaultMutableTreeNode) tree.getLastSelectedPathComponent();
+
+            if (node == null)
+                return;
+
+            Object obj = node.getUserObject();
+
+            if (obj instanceof PowerSupply ||
+                obj instanceof ControlCard ||
+                obj instanceof Module) {
+
+                propertyPanel.showObject(obj);
+            }
+        });
+
+        JScrollPane left = new JScrollPane(tree);
+
+        propertyPanel = new PropertyPanel(() -> {
+
+            tree.updateUI();
+
+        });
+
+//        propertyPanel.add(new JLabel("Select any node"),BorderLayout.CENTER);
+
+        split.setLeftComponent(left);
+
+        split.setRightComponent(propertyPanel);
+
+//        add(split);
+        JPanel bottom = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+
+        bottom.add(btnReload);
+        bottom.add(btnSave);
+
+        add(split, BorderLayout.CENTER);
+        add(bottom, BorderLayout.SOUTH);
+        
+        btnSave.addActionListener(e -> saveConfig());
+        btnReload.addActionListener(e -> reloadConfig());
+    }
+
+    
+    private void saveConfig() {
+
+        try {
+
+            ConfigManager manager = new ConfigManager();
+
+            manager.save(config, "config.json");
+
+            JOptionPane.showMessageDialog(this,
+                    "Configuration saved successfully.");
+
+        } catch (Exception ex) {
+
+            ex.printStackTrace();
+
+            JOptionPane.showMessageDialog(this,
+                    ex.getMessage());
+        }
+
+    }
+    
+    private void reloadConfig() {
+
+        try {
+
+            ConfigManager manager = new ConfigManager();
+
+            config = manager.load("config.json");
+
+            tree.setModel(new DefaultTreeModel(buildTree()));
+
+            JOptionPane.showMessageDialog(this,
+                    "Configuration Reloaded");
+
+        } catch (Exception ex) {
+
+            ex.printStackTrace();
+        }
+
+    }
+    private DefaultMutableTreeNode buildTree() {
+
+        DefaultMutableTreeNode root =
+                new DefaultMutableTreeNode("Configuration");
+
+        DefaultMutableTreeNode psus =
+                new DefaultMutableTreeNode("Power Supplies");
+
+        root.add(psus);
+
+        for(PowerSupply ps : config.getPower_supplies()) {
+
+            DefaultMutableTreeNode psNode =
+                    new DefaultMutableTreeNode(ps);
+
+            psus.add(psNode);
+
+            for(ControlCard cc : ps.getControl_cards()) {
+
+                DefaultMutableTreeNode ccNode =
+                        new DefaultMutableTreeNode(cc);
+
+                psNode.add(ccNode);
+
+                for(Module m : cc.getModules()) {
+
+                    ccNode.add(new DefaultMutableTreeNode(m));
+                }
+            }
+        }
+
+        DefaultMutableTreeNode standalone =
+                new DefaultMutableTreeNode("Standalone Cards");
+
+        root.add(standalone);
+
+        for(ControlCard cc :
+                config.getStandalone_control_cards()) {
+
+            DefaultMutableTreeNode ccNode =
+                    new DefaultMutableTreeNode(cc);
+
+            standalone.add(ccNode);
+
+            for(Module m : cc.getModules()) {
+
+                ccNode.add(new DefaultMutableTreeNode(m));
+            }
+        }
+
+        treeModel = new DefaultTreeModel(root);
+
+        return root;
+    }
+}
+
+
+public class Main {
+
+    public static void main(String[] args) {
+
+        SwingUtilities.invokeLater(() -> {
+
+            new ConfigEditorFrame().setVisible(true);
+
+        });
+
+    }
+
+}
+
+public class PropertyPanel extends JPanel {
+
+	private JTextField txtId = new JTextField();
+	private JTextField txtIp = new JTextField();
+	private JTextField txtPort = new JTextField();
+
+	private JTextArea txtOn = new JTextArea(3, 30);
+	private JTextArea txtOff = new JTextArea(3, 30);
+	private JTextArea txtStatus = new JTextArea(3, 30);
+
+	private JTextField txtModuleName = new JTextField();
+	private JTextArea txtPowerOn = new JTextArea(3, 30);
+	private JTextArea txtPowerOff = new JTextArea(3, 30);
+
+	private JLabel lblId;
+	private JLabel lblIp;
+	private JLabel lblPort;
+
+	private JLabel lblOn;
+	private JLabel lblOff;
+	private JLabel lblStatus;
+
+	private JLabel lblModuleName;
+	private JLabel lblPowerOn;
+	private JLabel lblPowerOff;
+
+	private JButton btnApply = new JButton("Apply");
+
+	private Object currentObject;
+	private Runnable refreshCallback;
+
+	public PropertyPanel(Runnable refreshCallback) {
+
+		this.refreshCallback = refreshCallback;
+
+		setLayout(new GridBagLayout());
+
+		GridBagConstraints gbc = new GridBagConstraints();
+
+		gbc.insets = new Insets(5, 5, 5, 5);
+		gbc.fill = GridBagConstraints.HORIZONTAL;
+		gbc.weightx = 1;
+
+		int row = 0;
+
+		lblId = addRow("ID", txtId, row++, gbc);
+		lblIp = addRow("IP", txtIp, row++, gbc);
+		lblPort = addRow("Port", txtPort, row++, gbc);
+
+		lblOn = addArea("ON Command", txtOn, row++, gbc);
+		lblOff = addArea("OFF Command", txtOff, row++, gbc);
+		lblStatus = addArea("STATUS Command", txtStatus, row++, gbc);
+
+		lblModuleName = addRow("Module Name", txtModuleName, row++, gbc);
+
+		lblPowerOn = addArea("Power ON", txtPowerOn, row++, gbc);
+		lblPowerOff = addArea("Power OFF", txtPowerOff, row++, gbc);
+
+		gbc.gridx = 1;
+		gbc.gridy = row;
+		add(btnApply, gbc);
+
+		btnApply.addActionListener(e -> saveChanges());
+	}
+
+	private JLabel addRow(String label, JComponent field, int row, GridBagConstraints gbc) {
+
+		JLabel lbl = new JLabel(label);
+
+		gbc.gridx = 0;
+		gbc.gridy = row;
+		gbc.weightx = 0;
+
+		add(lbl, gbc);
+
+		gbc.gridx = 1;
+		gbc.weightx = 1;
+
+		add(field, gbc);
+
+		return lbl;
+	}
+
+	private JLabel addArea(String label, JTextArea area, int row, GridBagConstraints gbc) {
+
+		JLabel lbl = new JLabel(label);
+
+		gbc.gridx = 0;
+		gbc.gridy = row;
+		gbc.weightx = 0;
+
+		add(lbl, gbc);
+
+		gbc.gridx = 1;
+		gbc.weightx = 1;
+
+		JScrollPane sp = new JScrollPane(area);
+
+		add(sp, gbc);
+
+		return lbl;
+	}
+
+	// ------------------------------------------------
+
+	public void showObject(Object obj) {
+
+		currentObject = obj;
+
+		clear();
+
+		if (obj instanceof PowerSupply) {
+
+			showPowerSupply((PowerSupply) obj);
+
+		} else if (obj instanceof ControlCard) {
+
+			showControlCard((ControlCard) obj);
+
+		} else if (obj instanceof Module) {
+
+			showModule((Module) obj);
+
+		}
+	}
+
+	// ------------------------------------------------
+
+	private void showPowerSupply(PowerSupply ps){
+
+	    showFields(true,false,false);
+
+	    txtId.setText(ps.getId());
+	    txtIp.setText(ps.getIp());
+	    txtPort.setText(String.valueOf(ps.getPort()));
+	}
+
+	private void showControlCard(ControlCard cc){
+
+	    showFields(true,true,false);
+
+	    txtId.setText(cc.getId());
+	    txtIp.setText(cc.getIp());
+	    txtPort.setText(String.valueOf(cc.getPort()));
+
+	    txtOn.setText(cc.getOn_command());
+	    txtOff.setText(cc.getOff_command());
+
+	    txtStatus.setText(
+	            cc.getStatus_command()==null ? "" : cc.getStatus_command());
+	}
+
+	private void showModule(Module m){
+
+	    showFields(false,false,true);
+
+	    txtModuleName.setText(m.getName());
+
+	    txtPowerOn.setText(m.getPower_on());
+
+	    txtPowerOff.setText(m.getPower_off());
+	}
+
+	// ------------------------------------------------
+
+	private void clear() {
+
+		txtId.setText("");
+		txtIp.setText("");
+		txtPort.setText("");
+
+		txtOn.setText("");
+		txtOff.setText("");
+		txtStatus.setText("");
+
+		txtModuleName.setText("");
+		txtPowerOn.setText("");
+		txtPowerOff.setText("");
+
+	}
+
+	// ------------------------------------------------
+
+	private void saveChanges() {
+
+		if (currentObject instanceof PowerSupply) {
+
+			PowerSupply ps = (PowerSupply) currentObject;
+
+			ps.setId(txtId.getText());
+
+			ps.setIp(txtIp.getText());
+
+			ps.setPort(Integer.parseInt(txtPort.getText()));
+
+		}
+
+		else if (currentObject instanceof ControlCard) {
+
+			ControlCard cc = (ControlCard) currentObject;
+
+			cc.setId(txtId.getText());
+
+			cc.setIp(txtIp.getText());
+
+			cc.setPort(Integer.parseInt(txtPort.getText()));
+
+			cc.setOn_command(txtOn.getText());
+
+			cc.setOff_command(txtOff.getText());
+
+			cc.setStatus_command(txtStatus.getText());
+
+		}
+
+		else if (currentObject instanceof Module) {
+
+			Module m = (Module) currentObject;
+
+			m.setName(txtModuleName.getText());
+
+			m.setPower_on(txtPowerOn.getText());
+
+			m.setPower_off(txtPowerOff.getText());
+
+		}
+
+//        JOptionPane.showMessageDialog(this,"Updated");
+
+		if (refreshCallback != null) {
+			refreshCallback.run();
+		}
+	}
+
+	private void showFields(boolean basic, boolean commands, boolean module) {
+
+		lblId.setVisible(basic);
+		txtId.setVisible(basic);
+
+		lblIp.setVisible(basic);
+		txtIp.setVisible(basic);
+
+		lblPort.setVisible(basic);
+		txtPort.setVisible(basic);
+
+		lblOn.setVisible(commands);
+		txtOn.setVisible(commands);
+
+		lblOff.setVisible(commands);
+		txtOff.setVisible(commands);
+
+		lblStatus.setVisible(commands);
+		txtStatus.setVisible(commands);
+
+		lblModuleName.setVisible(module);
+		txtModuleName.setVisible(module);
+
+		lblPowerOn.setVisible(module);
+		txtPowerOn.setVisible(module);
+
+		lblPowerOff.setVisible(module);
+		txtPowerOff.setVisible(module);
+
+		revalidate();
+		repaint();
+	}
+
+}
